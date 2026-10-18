@@ -13,6 +13,12 @@ pub type Result<T> = std::result::Result<T, ToolParserError>;
 pub enum ToolParserError {
     #[error("tool parser parsing failed: {message}")]
     ParsingFailed { message: String },
+    /// The output ended inside a tool call, so the call cannot be completed.
+    ///
+    /// A generation cut by `max_tokens` drops the unfinished call; any other
+    /// finish reason emits the buffered text as content.
+    #[error("{message}")]
+    IncompleteToolCall { message: String },
     #[error(
         "`{name}` only provides a unified parser; the same reasoning parser and tool parser should be specified together"
     )]

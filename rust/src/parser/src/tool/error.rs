@@ -15,9 +15,9 @@ pub enum ToolParserError {
     ParsingFailed { message: String },
     /// The output ended inside a tool call, so the call cannot be completed.
     ///
-    /// A generation cut by `max_tokens` drops the unfinished call; any other
-    /// finish reason emits the buffered text as content.
-    #[error("{message}")]
+    /// Callers may treat this differently from other parse errors; see the
+    /// unified output path in the chat crate.
+    #[error("tool parser parsing failed: {message}")]
     IncompleteToolCall { message: String },
     #[error(
         "`{name}` only provides a unified parser; the same reasoning parser and tool parser should be specified together"

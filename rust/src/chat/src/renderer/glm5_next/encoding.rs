@@ -10,9 +10,9 @@ use serde_json::ser::{Formatter, Serializer};
 use serde_json::{Value, json};
 use thiserror_ext::AsReport as _;
 
-use crate::error::{Result, bail_chat_template_thrown, chat_template_thrown};
+use crate::error::{Error, Result, bail_chat_template_thrown, chat_template_thrown};
 use crate::renderer::MediaPartSource;
-use crate::request::{ChatContent, ChatContentPart, ChatMessage, ChatTool};
+use crate::request::{ChatContent, ChatContentPart, ChatMessage, ChatTool, GenerationPromptMode};
 use crate::{AssistantContentBlock, AssistantMessageExt};
 
 const TOOLS_PREFIX: &str = "<|system|>\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n";
@@ -265,36 +265,30 @@ fn tool_call(out: &mut String, call: &Value) -> Result<()> {
 pub(super) fn render(
     messages: &[Value],
     tools: &[Value],
-    add_generation_prompt: bool,
+    mode: GenerationPromptMode,
     kwargs: &HashMap<String, Value>,
 ) -> Result<String> {
-    render_inner(
-        messages,
-        tools,
-        add_generation_prompt,
-        kwargs,
-        &mut MediaContext::default(),
-    )
+    render_inner(messages, tools, mode, kwargs, &mut MediaContext::default())
 }
 
 pub(super) fn render_with_media(
     messages: &[Value],
     tools: &[Value],
-    add_generation_prompt: bool,
+    mode: GenerationPromptMode,
     kwargs: &HashMap<String, Value>,
 ) -> Result<(String, Vec<MediaPartSource>)> {
     let mut media = MediaContext {
         enabled: true,
         order: Vec::new(),
     };
-    let prompt = render_inner(messages, tools, add_generation_prompt, kwargs, &mut media)?;
+    let prompt = render_inner(messages, tools, mode, kwargs, &mut media)?;
     Ok((prompt, media.order))
 }
 
 fn render_inner(
     messages: &[Value],
     tools: &[Value],
-    add_generation_prompt: bool,
+    mode: GenerationPromptMode,
     kwargs: &HashMap<String, Value>,
     media: &mut MediaContext,
 ) -> Result<String> {
@@ -332,6 +326,7 @@ fn render_inner(
             "assistant" => {
                 out.push_str("<|assistant|><think>");
                 let mut content = visible_text(&message["content"], media);
+                let original = content.clone();
                 let mut reasoning = message["reasoning_content"].as_str().map(str::to_owned);
                 if reasoning.is_none() && content.contains("</think>") {
                     reasoning = Some(
@@ -352,9 +347,27 @@ fn render_inner(
                     out.push_str(&reasoning);
                 }
                 out.push_str("</think>");
-                out.push_str(content.trim_matches(|ch: char| {
-                    ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch)
-                }));
+                let trim = |ch: char| ch.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&ch);
+                if mode == GenerationPromptMode::ContinueFinalAssistant
+                    && index + 1 == messages.len()
+                {
+                    // Match HF continuation, which truncates the template output
+                    // at the end of the final content: tool calls are dropped,
+                    // trailing whitespace is trimmed, and content the template
+                    // rewrote is rejected.
+                    out.push_str(content.trim_matches(trim));
+                    let original = original.trim_matches(trim);
+                    if !out.contains(original) {
+                        return Err(Error::ChatTemplate(format!(
+                            "continue_final_message is set but the final message does not appear \
+                             in the prompt after applying the chat template! This can happen if \
+                             the chat template deletes portions of the final message. Final \
+                             message to continue: {original}"
+                        )));
+                    }
+                    break;
+                }
+                out.push_str(content.trim_matches(trim));
                 for call in message["tool_calls"].as_array().into_iter().flatten() {
                     tool_call(&mut out, call)?;
                 }
@@ -376,7 +389,7 @@ fn render_inner(
         }
         index += 1;
     }
-    if add_generation_prompt {
+    if mode == GenerationPromptMode::StartNewAssistant {
         out.push_str("<|assistant|><think>");
     }
     Ok(out)

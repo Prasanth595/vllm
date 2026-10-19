@@ -40,10 +40,6 @@ impl ChatRenderer for Glm5NextChatRenderer {
                 "glm5_next does not accept a chat_template override; use tokenizer-mode hf for Jinja"
             );
         }
-        if request.chat_options.continue_final_message() {
-            bail_chat_template_thrown!("continue_final_message is not supported by glm5_next");
-        }
-
         let mut kwargs = self.default_template_kwargs.clone();
         kwargs.extend(request.chat_options.template_kwargs.clone());
         if let Some(effort) = &request.chat_options.reasoning_effort {
@@ -59,7 +55,7 @@ impl ChatRenderer for Glm5NextChatRenderer {
             encoding::render_with_media(
                 &messages,
                 &tools,
-                request.chat_options.add_generation_prompt(),
+                request.chat_options.generation_prompt_mode,
                 &kwargs,
             )?
         } else {
@@ -67,7 +63,7 @@ impl ChatRenderer for Glm5NextChatRenderer {
                 encoding::render(
                     &messages,
                     &tools,
-                    request.chat_options.add_generation_prompt(),
+                    request.chat_options.generation_prompt_mode,
                     &kwargs,
                 )?,
                 Vec::new(),

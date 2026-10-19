@@ -2666,6 +2666,336 @@
       "add_generation_prompt": true,
       "kwargs": {},
       "error": "ValueError"
+    },
+    {
+      "name": "continue_plain",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "部分回答"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>部分回答"
+    },
+    {
+      "name": "continue_spaces",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "  partial answer \n"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>partial answer"
+    },
+    {
+      "name": "continue_unicode_spaces",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "　x "
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>x"
+    },
+    {
+      "name": "continue_python_whitespace",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "\u001c\u001d answer\u001e\u001f"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>answer"
+    },
+    {
+      "name": "continue_inline_think",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "<think>inline</think>partial"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think>inline</think>partial"
+    },
+    {
+      "name": "continue_inline_close_only",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "partial</think>more"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think>partial</think>more"
+    },
+    {
+      "name": "continue_inline_think_with_spaces",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "<think>a</think>  b"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "error": "ValueError"
+    },
+    {
+      "name": "continue_reasoning_text_tool",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "partial",
+          "reasoning_content": "reasoning",
+          "tool_calls": [
+            {
+              "id": "call_0",
+              "function": {
+                "name": "lookup",
+                "arguments": {
+                  "q": "x",
+                  "n": 1
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think>reasoning</think>partial"
+    },
+    {
+      "name": "continue_reasoning_only",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "r"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think>r</think>"
+    },
+    {
+      "name": "continue_empty_reasoning",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "x ",
+          "reasoning_content": ""
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>x"
+    },
+    {
+      "name": "continue_tool_call_only",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "id": "call_0",
+              "function": {
+                "name": "lookup",
+                "arguments": {
+                  "q": "x",
+                  "n": 1
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>"
+    },
+    {
+      "name": "continue_whitespace_only",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "   "
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>"
+    },
+    {
+      "name": "continue_no_user",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": "partial",
+          "reasoning_content": "r"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {},
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|assistant|><think>r</think>partial"
+    },
+    {
+      "name": "continue_clear_thinking",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "old",
+          "reasoning_content": "old r"
+        },
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "new",
+          "reasoning_content": "new r"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {
+        "clear_thinking": true
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>你好，GLM！<|assistant|><think></think>old<|user|>你好，GLM！<|assistant|><think>new r</think>new"
+    },
+    {
+      "name": "continue_after_tool_response",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好，GLM！"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "r",
+          "tool_calls": [
+            {
+              "id": "call_0",
+              "function": {
+                "name": "lookup",
+                "arguments": {
+                  "q": "x",
+                  "n": 1
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "结果",
+          "tool_call_id": "call_0"
+        },
+        {
+          "role": "assistant",
+          "content": "根据结果"
+        }
+      ],
+      "tools": [],
+      "add_generation_prompt": false,
+      "continue_final_message": true,
+      "kwargs": {
+        "reasoning_effort": "low"
+      },
+      "expected": "[gMASK]<sop><|system|>Reasoning Effort: Low<|user|>你好，GLM！<|assistant|><think>r</think><tool_call>lookup<arg_key>q</arg_key><arg_value>x</arg_value><arg_key>n</arg_key><arg_value>1</arg_value></tool_call><|observation|><tool_response>结果</tool_response><|assistant|><think></think>根据结果"
     }
   ]
 }

@@ -19,6 +19,8 @@ struct TestCase {
     messages: Vec<Value>,
     tools: Vec<Value>,
     add_generation_prompt: bool,
+    #[serde(default)]
+    continue_final_message: bool,
     kwargs: HashMap<String, Value>,
     expected: Option<String>,
     error: Option<String>,
@@ -37,7 +39,13 @@ fn renders_expected_prompts_and_rejects_invalid_input() {
         let result = encoding::render(
             &case.messages,
             &case.tools,
-            case.add_generation_prompt,
+            if case.continue_final_message {
+                GenerationPromptMode::ContinueFinalAssistant
+            } else if case.add_generation_prompt {
+                GenerationPromptMode::StartNewAssistant
+            } else {
+                GenerationPromptMode::NoGenerationPrompt
+            },
             &case.kwargs,
         );
         if case.error.is_some() {
@@ -241,15 +249,48 @@ fn empty_explicit_reasoning_suppresses_embedded_tag_parsing() {
 }
 
 #[test]
-fn unsupported_overrides_and_continuations_are_client_errors() {
-    let renderer = Glm5NextChatRenderer::default();
+fn chat_template_override_is_a_client_error() {
     let mut request = ChatRequest::for_test();
     request.chat_options.chat_template = Some("override".into());
-    assert!(renderer.render(&request).unwrap_err().is_request_validation_error());
-    request.chat_options.chat_template = None;
-    request.messages = vec![ChatMessage::assistant_text("prefix")];
-    request.chat_options.generation_prompt_mode = GenerationPromptMode::ContinueFinalAssistant;
-    assert!(renderer.render(&request).unwrap_err().is_request_validation_error());
+    let error = Glm5NextChatRenderer::default().render(&request).unwrap_err();
+    assert!(error.is_request_validation_error());
+}
+
+#[test]
+fn continue_final_message_matches_existing_hf_renderer() {
+    let final_messages = [
+        ChatMessage::assistant_text("  partial answer \n"),
+        ChatMessage::assistant_text("<think>inline</think>partial"),
+        ChatMessage::assistant_blocks(vec![
+            AssistantContentBlock::Reasoning {
+                text: "reasoning".into(),
+            },
+            AssistantContentBlock::Text {
+                text: "partial".into(),
+            },
+            AssistantContentBlock::ToolCall(AssistantToolCall {
+                id: "call_0".into(),
+                name: "lookup".into(),
+                arguments: json!({"q": "x"}).to_string(),
+            }),
+        ]),
+    ];
+    let native = Glm5NextChatRenderer::default();
+    for (name, template) in CHECKPOINT_TEMPLATES {
+        let hf = hf_renderer(template);
+        for final_message in &final_messages {
+            let mut request = tool_request(1);
+            request.messages.push(ChatMessage::user("继续"));
+            request.messages.push(final_message.clone());
+            request.chat_options.generation_prompt_mode =
+                GenerationPromptMode::ContinueFinalAssistant;
+            assert_eq!(
+                native.render(&request).unwrap().prompt,
+                hf.render(&request).unwrap().prompt,
+                "{name}: {final_message:?}"
+            );
+        }
+    }
 }
 
 #[test]

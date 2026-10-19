@@ -103,9 +103,9 @@ Everything lives in this folder. The model files only call in: `linear.py`
 (the config check in `__init__`, `plan_specialized_decode` in `forward`,
 `step.layer(i)` in the layer loop, `after_specialized_decode_step` in
 `compute_logits`), `model.py` (`get_model_state_cls`) and `mla.py`
-(`skip_o_proj`). Outside the model, AITER's MLA backend
-(`vllm/v1/attention/backends/mla/rocm_aiter_mla.py`) accepts a query M1a has
-already padded for its cprr decode.
+(`skip_o_proj`). Nothing outside the model changes: M1a writes the query
+AITER's cprr decode pads to (e.g. 96 -> 128 heads), and `runtime/mla.py` hands
+it to `forward_mqa` in place of the backend's padding copy.
 
 ```text
 hooks.py         SpecializedDecodeMixin: the model-side hooks

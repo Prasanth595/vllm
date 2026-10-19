@@ -2888,21 +2888,14 @@ class AiterMLAImpl(MLACommonImpl[AiterMLAMetadata]):
         assert decode.paged_kv_indices is not None
         B = q.shape[0]
 
-        # cprr has kernels only at native head counts, so pad q up (e.g. 96 ->
-        # 128). Heads are independent in MLA; the extras are sliced off below.
-        # A caller may hand q already padded (the Kimi-K3 mono M1a does).
-        asm_dcp_heads = decode.asm_decode_num_heads
-        prepadded = (
-            asm_dcp_heads > self._decode_num_heads and q.shape[1] == asm_dcp_heads
-        )
-        assert q.shape[1] == self._decode_num_heads or prepadded, (
+        assert q.shape[1] == self._decode_num_heads, (
             "ROCM_AITER_MLA decode expected the DCP-gathered query head count "
             f"{self._decode_num_heads}, got {q.shape[1]}"
         )
-        if prepadded:
-            mla_num_heads = asm_dcp_heads
-            mla_padded_q = q
-        elif asm_dcp_heads > self._decode_num_heads:
+        # cprr has kernels only at native head counts, so pad q up (e.g. 96 ->
+        # 128). Heads are independent in MLA; the extras are sliced off below.
+        asm_dcp_heads = decode.asm_decode_num_heads
+        if asm_dcp_heads > self._decode_num_heads:
             mla_num_heads = asm_dcp_heads
             mla_padded_q = AiterMLAHelper.get_mla_padded_q(
                 self._decode_num_heads, q, target_heads=mla_num_heads

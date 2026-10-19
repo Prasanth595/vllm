@@ -301,7 +301,7 @@ class FfnLayer(_Layer):
         md, _, kv_cache, slots = mla.context(w)
         s = prefix_sum.size(0)
         # AITER's cprr pad (e.g. 96 -> 128 heads) M1a writes in place of
-        # forward_mqa's copy
+        # forward_mqa's copy (mla.attend hands it over)
         qh = md.decode.asm_decode_num_heads if runner.dcp > 1 else 0
         qh = qh if qh > runner.dcp * m1.NH else 0
         q8 = prefix_sum.new_empty(

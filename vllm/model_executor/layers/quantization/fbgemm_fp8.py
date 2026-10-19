@@ -167,9 +167,8 @@ class FBGEMMFp8LinearMethod(LinearMethodBase):
 
         replace_parameter(layer, "weight", weight.t())
         if self.quant_config.use_marlin:
+            # Activations are not quantized for marlin (input_scale_ub unused).
             prepare_fp8_layer_for_marlin(layer)
-            # Activations not quantized for marlin.
-            del layer.input_scale_ub
 
         self.fp8_linear.process_weights_after_loading(layer)
 

@@ -161,6 +161,10 @@ pub struct RequestError {
     pub message: String,
     #[serde(default)]
     pub retryable: bool,
+    /// The request itself caused the error, so it is reported as a client
+    /// error. Takes precedence over `retryable`.
+    #[serde(default)]
+    pub invalid_request: bool,
 }
 
 /// Raw per-sequence speculative-decoding accumulator.

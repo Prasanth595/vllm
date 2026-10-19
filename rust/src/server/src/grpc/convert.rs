@@ -399,6 +399,9 @@ fn to_finish_info(finished: &Finished, token_ids: &[u32]) -> Result<pb::FinishIn
             (PbFinishReason::Stop as i32, sr)
         }
         FinishReason::Length => (PbFinishReason::Length as i32, None),
+        FinishReason::Error(Some(error)) if error.invalid_request => {
+            return Err(Status::invalid_argument(error.message.clone()));
+        }
         FinishReason::Error(Some(error)) if error.retryable => {
             return Err(Status::unavailable(error.message.clone()));
         }
@@ -1050,6 +1053,7 @@ mod tests {
             code: "engine_paused".to_string(),
             message: "Generation is paused.".to_string(),
             retryable: true,
+            invalid_request: false,
         };
         let fin = finished(FinishReason::Error(Some(Box::new(error))));
         let status = to_finish_info(&fin, &[]).expect_err("retryable error");
@@ -1058,6 +1062,21 @@ mod tests {
         let fin = finished(FinishReason::Error(None));
         let status = to_finish_info(&fin, &[]).expect_err("internal error");
         assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    #[test]
+    fn invalid_request_engine_error_maps_to_invalid_argument() {
+        // Also marked retryable, to pin that an invalid request wins.
+        let error = RequestError {
+            code: "prompt_too_long".to_string(),
+            message: "prompt does not fit the engine".to_string(),
+            retryable: true,
+            invalid_request: true,
+        };
+        let fin = finished(FinishReason::Error(Some(Box::new(error))));
+        let status = to_finish_info(&fin, &[]).expect_err("invalid request");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "prompt does not fit the engine");
     }
 
     #[test]

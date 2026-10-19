@@ -3976,79 +3976,191 @@ async fn invalid_terminal_finish_reason_is_returned_as_openai_error_sse() {
     assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
 }
 
+/// One request per route, to check how each reports an engine error: completions,
+/// chat completions, raw generate, and streamed raw generate.
+fn engine_error_requests() -> [(&'static str, serde_json::Value); 4] {
+    let model = "Qwen/Qwen1.5-0.5B-Chat";
+    let raw = |stream: bool| {
+        json!({"model": model, "token_ids": [11, 22], "stream": stream,
+               "sampling_params": {"max_tokens": 2}})
+    };
+    [
+        (
+            "/v1/completions",
+            json!({"model": model, "prompt": "hello"}),
+        ),
+        (
+            "/v1/chat/completions",
+            json!({"model": model, "messages": [{"role": "user", "content": "hello"}]}),
+        ),
+        ("/inference/v1/generate", raw(false)),
+        ("/inference/v1/generate", raw(true)),
+    ]
+}
+
+/// Serve `request` on `uri` from a mock engine that finishes it with
+/// `EngineCoreFinishReason::Error` carrying `error`, and return the status and body.
+async fn engine_error_response(
+    uri: &str,
+    request: &serde_json::Value,
+    error: Option<RequestError>,
+) -> (StatusCode, String) {
+    let model = "Qwen/Qwen1.5-0.5B-Chat";
+    let (chat, engine_task) = test_models_with_engine_outputs_and_backend_inner(
+        b"engine-openai",
+        move |request_id| {
+            RequestBatchOutputs {
+                outputs: vec![EngineCoreOutput {
+                    request_id: request_id.to_string(),
+                    finish_reason: Some(EngineCoreFinishReason::Error),
+                    error: error.map(Box::new),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .into()
+        },
+        |_| {},
+        Arc::new(FakeChatBackend::new()),
+    )
+    .await;
+    let mut app = build_router_with_scale_out_endpoints(
+        Arc::new(AppState::new(vec![model.to_string()], chat)),
+        true,
+    );
+    let response = app
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .expect("build request"),
+        )
+        .await
+        .expect("call app");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.expect("read body");
+    engine_task.await.expect("mock engine task");
+    (status, String::from_utf8(body.to_vec()).expect("utf8 body"))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial]
 async fn retryable_engine_error_returns_service_unavailable() {
     // A retryable engine error (e.g. a paused engine's rejection) is a 503 on
     // every route when it arrives before the response starts, an SSE error after.
-    let model = "Qwen/Qwen1.5-0.5B-Chat";
-    let messages = json!([{"role": "user", "content": "hello"}]);
-    let raw = |stream: bool| {
-        json!({"model": model, "token_ids": [11, 22], "stream": stream,
-               "sampling_params": {"max_tokens": 2}})
-    };
     let unavailable = StatusCode::SERVICE_UNAVAILABLE;
-    let cases = [
-        (
-            "/v1/completions",
-            json!({"model": model, "prompt": "hello"}),
-            unavailable,
-        ),
-        (
-            "/v1/chat/completions",
-            json!({"model": model, "messages": messages}),
-            unavailable,
-        ),
-        ("/inference/v1/generate", raw(false), unavailable),
-        ("/inference/v1/generate", raw(true), StatusCode::OK),
-    ];
-    for (uri, request, status) in cases {
-        let (chat, engine_task) = test_models_with_engine_outputs_and_backend_inner(
-            b"engine-openai",
-            |request_id| {
-                RequestBatchOutputs {
-                    outputs: vec![EngineCoreOutput {
-                        request_id: request_id.to_string(),
-                        finish_reason: Some(EngineCoreFinishReason::Error),
-                        error: Some(Box::new(RequestError {
-                            code: "engine_paused".to_string(),
-                            message: "Generation is paused.".to_string(),
-                            retryable: true,
-                        })),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }
-                .into()
-            },
-            |_| {},
-            Arc::new(FakeChatBackend::new()),
-        )
-        .await;
-        let mut app = build_router_with_scale_out_endpoints(
-            Arc::new(AppState::new(vec![model.to_string()], chat)),
-            true,
-        );
-        let response = app
-            .call(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("content-type", "application/json")
-                    .body(Body::from(request.to_string()))
-                    .expect("build request"),
-            )
-            .await
-            .expect("call app");
-
-        assert_eq!(response.status(), status, "{uri} {request}");
-        let body = to_bytes(response.into_body(), usize::MAX).await.expect("read body");
-        engine_task.await.expect("mock engine task");
-        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+    let statuses = [unavailable, unavailable, unavailable, StatusCode::OK];
+    for ((uri, request), status) in engine_error_requests().into_iter().zip(statuses) {
+        let error = RequestError {
+            code: "engine_paused".to_string(),
+            message: "Generation is paused.".to_string(),
+            retryable: true,
+            invalid_request: false,
+        };
+        let (actual, text) = engine_error_response(uri, &request, Some(error)).await;
+        assert_eq!(actual, status, "{uri} {request}");
         assert!(
             text.contains("\"code\":\"engine_paused\""),
             "{uri} {request}: {text}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn invalid_request_engine_error_returns_bad_request() {
+    // An engine error caused by the request is a 400 with the engine's message on
+    // every route when it arrives before the response starts, an SSE error after.
+    // It is also marked retryable, to pin that an invalid request wins.
+    let bad_request = StatusCode::BAD_REQUEST;
+    let statuses = [bad_request, bad_request, bad_request, StatusCode::OK];
+    for ((uri, request), status) in engine_error_requests().into_iter().zip(statuses) {
+        let error = RequestError {
+            code: "prompt_too_long".to_string(),
+            message: "The prompt does not fit in the engine.".to_string(),
+            retryable: true,
+            invalid_request: true,
+        };
+        let (actual, text) = engine_error_response(uri, &request, Some(error)).await;
+        assert_eq!(actual, status, "{uri} {request}");
+        assert!(
+            text.contains("\"type\":\"invalid_request_error\""),
+            "{uri} {request}: {text}"
+        );
+        assert!(
+            text.contains("The prompt does not fit in the engine."),
+            "{uri} {request}: {text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn engine_error_reaches_completion_streams_that_request_logprobs() {
+    // A plain stream and a prompt-only stream both ask for logprobs that an engine
+    // error cannot carry. The stream still reports the engine's error.
+    let model = "Qwen/Qwen1.5-0.5B-Chat";
+    for request in [
+        json!({"model": model, "prompt": "hello", "logprobs": 1, "stream": true}),
+        json!({"model": model, "prompt": "hello world", "echo": true, "max_tokens": 0,
+               "logprobs": 1, "stream": true}),
+    ] {
+        let error = RequestError {
+            code: "prompt_too_long".to_string(),
+            message: "The prompt does not fit in the engine.".to_string(),
+            retryable: false,
+            invalid_request: true,
+        };
+        let (status, text) = engine_error_response("/v1/completions", &request, Some(error)).await;
+        assert_eq!(status, StatusCode::OK, "{request}");
+        assert!(
+            text.contains("\"type\":\"invalid_request_error\""),
+            "{request}: {text}"
+        );
+        assert!(
+            text.contains("The prompt does not fit in the engine."),
+            "{request}: {text}"
+        );
+        assert!(
+            text.trim_end().ends_with("data: [DONE]"),
+            "{request}: {text}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn other_engine_errors_return_internal_server_error() {
+    // Any other engine error is a 500 that hides the engine's message on every
+    // route when it arrives before the response starts, raw generate included,
+    // and an SSE error after.
+    let internal = StatusCode::INTERNAL_SERVER_ERROR;
+    let statuses = [internal, internal, internal, StatusCode::OK];
+    let errors = [
+        None,
+        Some(RequestError {
+            code: "engine_failure".to_string(),
+            message: "detail for the server log".to_string(),
+            retryable: false,
+            invalid_request: false,
+        }),
+    ];
+    for error in errors {
+        for ((uri, request), status) in engine_error_requests().into_iter().zip(statuses) {
+            let (actual, text) = engine_error_response(uri, &request, error.clone()).await;
+            assert_eq!(actual, status, "{uri} {request} {error:?}");
+            assert!(
+                text.contains("\"type\":\"server_error\""),
+                "{uri} {request}: {text}"
+            );
+            assert!(
+                text.contains("Internal server error")
+                    && !text.contains("detail for the server log"),
+                "{uri} {request}: {text}"
+            );
+        }
     }
 }
 

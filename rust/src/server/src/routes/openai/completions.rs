@@ -272,6 +272,7 @@ async fn completion_chunk_stream(
     ));
     let mut visible_text_len = 0_u32;
     let mut first_chunk = true;
+    let mut deferred_prompt_logprobs_error: Option<ApiError> = None;
     let mut continuous_usage = ContinuousUsage::default();
 
     /// Yield a chunk with optional continuous usage attached.
@@ -303,12 +304,21 @@ async fn completion_chunk_stream(
                 if let Some(prompt) = echo.as_ref() {
                     visible_text_len = text_len(prompt);
                     let logprobs = if prompt_only && requested_logprobs.is_some() {
-                        Some(prompt_only_logprobs_to_openai(
+                        match prompt_only_logprobs_to_openai(
                             prompt_logprobs.as_ref(),
                             prompt,
                             prompt_token_ids.as_ref(),
                             return_tokens_as_token_ids,
-                        )?)
+                        ) {
+                            Ok(logprobs) => Some(logprobs),
+                            // An engine error carries no prompt logprobs either, so the
+                            // terminal event decides which error to report. Nothing is
+                            // emitted until it arrives.
+                            Err(error) => {
+                                deferred_prompt_logprobs_error = Some(error);
+                                continue;
+                            }
+                        }
                     } else {
                         None
                     };
@@ -345,6 +355,10 @@ async fn completion_chunk_stream(
                 // so hide its delta and forward only the terminal finish/usage metadata.
                 if prompt_only {
                     if let Some(finished) = finished {
+                        if let Some(error) = deferred_prompt_logprobs_error.take() {
+                            completion_finish_reason_to_openai(&finished.finish_reason)?;
+                            return Err(error);
+                        }
                         if enable_log_requests {
                             info!(
                                 stream = true,
@@ -383,6 +397,11 @@ async fn completion_chunk_stream(
                     continue;
                 }
                 let delta_text_len = text_len(&delta);
+                // An engine error is reported before the delta's logprobs are demanded,
+                // since it carries neither tokens nor logprobs.
+                if let Some(finished) = &finished {
+                    completion_finish_reason_to_openai(&finished.finish_reason)?;
+                }
                 let logprobs = if requested_logprobs.is_some() {
                     let decoded_logprobs = logprobs.as_ref().ok_or_else(|| {
                         server_error!(

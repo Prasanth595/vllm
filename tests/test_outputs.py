@@ -4,6 +4,11 @@
 import pytest
 import torch
 
+from vllm.exceptions import (
+    GenerationError,
+    RetryableRequestError,
+    VLLMValidationError,
+)
 from vllm.outputs import (
     ClassificationRequestOutput,
     CompletionOutput,
@@ -30,6 +35,30 @@ def test_request_output_forward_compatible():
         example_arg_added_in_new_version="some_value",
     )
     assert output is not None
+
+
+@pytest.mark.parametrize(
+    ("retryable", "invalid_request", "exception_type"),
+    [
+        (False, False, GenerationError),
+        (True, False, RetryableRequestError),
+        (False, True, VLLMValidationError),
+        # Sending an invalid request again cannot succeed.
+        (True, True, VLLMValidationError),
+    ],
+)
+def test_request_error_to_exception(retryable, invalid_request, exception_type):
+    error = RequestError(
+        code="engine_code",
+        message="engine message",
+        retryable=retryable,
+        invalid_request=invalid_request,
+    )
+
+    exception = error.to_exception()
+
+    assert type(exception) is exception_type
+    assert str(exception) == "engine message"
 
 
 @pytest.mark.parametrize(

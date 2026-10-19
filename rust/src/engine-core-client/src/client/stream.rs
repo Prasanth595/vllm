@@ -175,9 +175,13 @@ impl Stream for EngineCoreOutputStream {
                         // come. Only the last output of a delivery can be terminal.
                         let output = delivery.last();
                         if output.finished() {
-                            // A retryable error (e.g. a paused engine's rejection) is expected.
+                            // A retryable error (e.g. a paused engine's rejection) or an
+                            // invalid request is expected.
                             if output.finish_reason == Some(EngineCoreFinishReason::Error)
-                                && !output.error.as_ref().is_some_and(|error| error.retryable)
+                                && !output
+                                    .error
+                                    .as_ref()
+                                    .is_some_and(|error| error.retryable || error.invalid_request)
                             {
                                 error!(
                                     self.request_id,

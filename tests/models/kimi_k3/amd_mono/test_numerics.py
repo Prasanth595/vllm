@@ -866,7 +866,12 @@ def _m1_worker(
     def pre(w, prefix, blocks, cache, q8, gate, layer=3):
         S = prefix.size(0)
         key = MlaPreBuild(
-            tokens=S, nblocks=nb, delta=True, ranks=R, peer_off=runner.mla_peer_off
+            tokens=S,
+            nblocks=nb,
+            delta=True,
+            ranks=R,
+            peer_off=runner.mla_peer_off,
+            qheads=q8.size(1) if q8.size(1) != R * NH else 0,
         )
         mla_pre(
             key,
@@ -933,6 +938,15 @@ def _m1_worker(
         assert errs["q"] < 3e-2 and errs["gate"] < 1e-2, (S, errs)
         assert _cos(_fp8_f(q8), _fp8_f(want)) > 0.999, (S, errs)
         assert errs["cache_same"] > 0.99, (S, errs)
+        # AITER cprr's padded query (96 -> 128 heads): the pad tiles heads 0..
+        runner.step_begin()
+        prefix, blocks = w["prefix"].clone(), w["blocks"].clone()
+        qp = torch.zeros(S, 128, ENTRY, dtype=torch.uint8, device=device)
+        pre(w, prefix, blocks, w["kv_cache"].clone(), qp, gate)
+        torch.accelerator.synchronize()
+        assert not runner.health.any() and not runner.flags.any(), S
+        assert torch.equal(qp[:, : R * NH], q8), S
+        assert torch.equal(qp[:, R * NH :], q8[:, : 128 - R * NH]), S
 
     # M1b: every sender's partials for this rank's heads, each with its own
     # empty-shard mask, combined in rank order

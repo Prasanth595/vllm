@@ -149,6 +149,9 @@ class MlaPreBuild:
     ranks: int = 8  # the DCP (= TP) group; 1: no DCP, no peer memory
     peer_off: int = 0  # QG's byte offset in a rank's peer buffer
     timeline: bool = False
+    # q_out's heads a token (DCP8; 0: ranks x 12). More: AITER cprr's padded
+    # query, heads ranks x 12.. tiling heads 0.. as forward_mqa's pad would
+    qheads: int = 0
 
 
 ABI = KernelAbi(
@@ -213,6 +216,10 @@ def scratch_layout(key: MlaPreBuild) -> dict:
 
 def scratch_bytes(key: MlaPreBuild) -> int:
     return max(o + n for o, n in scratch_layout(key).values())
+
+
+def q_heads(key: MlaPreBuild) -> int:
+    return key.qheads or key.ranks * NH
 
 
 def peer_pairs(s: int, ranks: int) -> int:
@@ -472,9 +479,11 @@ def uk_tasks(c):
 # ---------------------------------------------------------------- unpack
 @traced
 def stage_unpack(c):
-    """This rank's QG -> ``q_out`` [S, ranks x 12, 576]: a thread 2 words a
-    round (QG pair 2 u, u = global thread + round x grid)."""
-    s, R, tid, bid = c["S"], c["R"], c["tid"], c["bid"]
+    """This rank's QG -> ``q_out`` [S, QH, 576]: a thread 2 words a round (QG
+    pair 2 u, u = global thread + round x grid). Gathered head g also lands
+    at R x 12 + g while that is a pad head (g < QH - R x 12)."""
+    s, R, tid, bid, QH = c["S"], c["R"], c["tid"], c["bid"], c["QH"]
+    pad = QH - R * NH
     nu = R * s * NH * QW // 2
     grid = BLOCKS * THREADS
     rounds = (nu + grid - 1) // grid
@@ -487,13 +496,14 @@ def stage_unpack(c):
         h = (u // (QW // 2)) % NH
         t = (u // (NH * QW // 2)) % s
         src = u // (s * NH * QW // 2)
-        at = ((t * R + src) * NH + h) * QW + 2 * w2
+        gh = src * NH + h
+        at = (t * QH + gh) * QW + 2 * w2
         if g + grid * i < nu:
-            bo.buffer_store(
-                fx.Vector.from_elements(got[i], fx.Int32),
-                rsrc(c["args"]["q_out"]),
-                at,
-            )
+            word = fx.Vector.from_elements(got[i], fx.Int32)
+            bo.buffer_store(word, rsrc(c["args"]["q_out"]), at)
+            if const_expr(pad > 0):  # noqa: SIM102 (compile-time, then traced)
+                if gh < pad:
+                    bo.buffer_store(word, rsrc(c["args"]["q_out"]), at + R * NH * QW)
 
 
 # ---------------------------------------------------------------- kernel
@@ -508,6 +518,8 @@ def build(key: MlaPreBuild):
     lay = scratch_layout(key)
     xrow = HIDDEN + LDS_PAD
     assert 1 <= s <= MAX_S and key.nblocks >= 1 and 1 <= R <= 8
+    qh = q_heads(key)
+    assert R * NH <= qh <= 2 * R * NH and (R > 1 or qh == NH)
 
     @fx.struct
     class AttnLds:
@@ -530,7 +542,7 @@ def build(key: MlaPreBuild):
     keyed = key_tuple(key, _SOURCES)
     name = (
         f"k3_mono_mla_pre_s{s}_nb{key.nblocks}_d{int(key.delta)}_r{R}"
-        f"_t{int(key.timeline)}"
+        f"_t{int(key.timeline)}_qh{qh}"
     )
 
     @flyc.kernel(name=name, known_block_size=[THREADS, 1, 1])
@@ -585,6 +597,7 @@ def build(key: MlaPreBuild):
         c = {
             "S": s,
             "R": R,
+            "QH": qh,
             "NS": ns,
             "NB": key.nblocks,
             "tid": tid,
@@ -786,13 +799,14 @@ def mla_pre(
     """Host launcher. ``w_k`` (12, 512, 64) u8 MXFP4 and ``w_k_scale`` (12, 512,
     4) e8m0, any strides but W_K's last; ``kv_cache`` [blocks, block_size, 576]
     one-byte, entries dense; ``slots`` [S] int64 (-1: another rank's token);
-    ``gate_out`` [S, 1536] bf16; ``q_out`` [S, ranks x 12, 576] fp8 (dense);
+    ``gate_out`` [S, 1536] bf16; ``q_out`` [S, q_heads(key), 576] fp8 (dense);
     ``peers`` every rank's peer buffer base (i64 a rank; unread at ranks 1,
     may be None); ``layer`` a slot below
     ``kda.TAG_SLOTS``."""
     assert w_k.stride(-1) == 1 and kv_cache.stride(-1) == 1
     assert slots.dtype == torch.int64 and slots.size(0) == key.tokens
     assert q_out.is_contiguous() and gate_out.is_contiguous()
+    assert q_out.shape[1:] == (q_heads(key), ENTRY), q_out.shape
     f = build(key)
     f(
         prefix.data_ptr(),

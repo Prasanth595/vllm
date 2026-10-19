@@ -224,10 +224,12 @@ class FfnLayer(_Layer):
         self.wrapper = layer.self_attn.mla_attn
         self.cache_layers = (self.wrapper.mla_attn.layer_name,)
 
-    def _m1a_key(self, delta: bool):
+    def _m1a_key(self, delta: bool, qheads: int | None = None):
         from vllm.models.kimi_k3.amd.ops.mono.attention import mla
 
         layer, w = self.layer, self.wrapper
+        if qheads is None:
+            qheads = self._cprr_heads()
         return mla.MlaPreBuild(
             tokens=self.width,
             nblocks=layer.prev_valid_blocks,
@@ -238,7 +240,27 @@ class FfnLayer(_Layer):
             kv_eps=w.kv_a_layernorm.variance_epsilon,
             ranks=self.runner.dcp,
             peer_off=self.runner.mla_peer_off,
+            qheads=qheads,
         )
+
+    def _cprr_heads(self) -> int:
+        """The head count AITER's cprr decode pads the gathered query to, 0 if
+        it doesn't pad. The warm-up's guess; ``launch`` reads the step's."""
+        import vllm.envs as envs
+        from vllm.models.kimi_k3.amd.ops.mono.attention.mla import NH
+        from vllm.v1.attention.backends.mla import rocm_aiter_mla as am
+
+        n = self.runner.dcp * NH
+        # KV interleave 1: spec.py refuses any other at DCP8
+        asm = am._asm_dcp_verify_configured(self.runner.dcp, 1, True)
+        if (
+            not asm
+            or self.runner.num_spec + 1 < am._MIN_CPRR_QLEN
+            or envs.VLLM_ROCM_AITER_MLA_DCP_VERIFY.lower() == "segmented"
+        ):
+            return 0
+        heads = am._asm_dcp_verify_heads(n)
+        return heads if heads > n else 0
 
     def _m1b_key(self, qlen: int):
         from vllm.models.kimi_k3.amd.ops.mono.attention import mla_back
@@ -270,13 +292,17 @@ class FfnLayer(_Layer):
             runner.step_begin()
         md, _, kv_cache, slots = mla.context(w)
         s = prefix_sum.size(0)
+        # AITER's cprr pad (e.g. 96 -> 128 heads) M1a writes in place of
+        # forward_mqa's copy
+        qh = md.decode.asm_decode_num_heads if runner.dcp > 1 else 0
+        qh = qh if qh > runner.dcp * m1.NH else 0
         q8 = prefix_sum.new_empty(
-            s, runner.dcp * m1.NH, m1.ENTRY,
+            s, qh or runner.dcp * m1.NH, m1.ENTRY,
             dtype=current_platform.fp8_dtype(),
         )  # fmt: skip
         gate = prefix_sum.new_empty(s, m1.GROWS)
         m1.mla_pre(
-            self._m1a_key(prefix_delta is not None),
+            self._m1a_key(prefix_delta is not None, qh),
             prefix=prefix_sum,
             delta=prefix_delta,
             blocks=block_residual,

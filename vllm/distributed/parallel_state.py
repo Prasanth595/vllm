@@ -1699,8 +1699,16 @@ def graph_capture(device: torch.device):
     in order to explicitly distinguish the kernels to capture
     from other kernels possibly launched on background in the default stream.
     """
+    from vllm.device_allocator.alloc_conf import non_expandable_allocations
+    from vllm.platforms import current_platform
+
     context = GraphCaptureContext(torch.cuda.Stream(device=device))
+    # Outermost, so the communicators see the allocator state of the capture.
+    non_expandable = (
+        envs.VLLM_ROCM_NON_EXPANDABLE_CUDAGRAPH_POOL and current_platform.is_rocm()
+    )
     with (
+        non_expandable_allocations(non_expandable),
         get_tp_group().graph_capture(context),
         get_pp_group().graph_capture(context),
         get_dp_group().graph_capture(context),

@@ -69,7 +69,10 @@ implementation.
 from vllm import LLM
 from vllm.config import WeightTransferConfig
 
-llm = LLM(model="my-model", weight_transfer_config=WeightTransferConfig(backend="modelexpress"))
+llm = LLM(
+    model="my-model",
+    weight_transfer_config=WeightTransferConfig(backend="modelexpress"),
+)
 ```
 
 ```bash

@@ -38,21 +38,22 @@ To use interleaved thinking with tool calls, specify a model that supports this 
       --reasoning-parser minimax_m2 \
       --enable-auto-tool-choice
     """
+
     import json
-    
+
     from openai import OpenAI
-    
-    client = OpenAI(base_url="http://localhost:8000/v1",     api_key="dummy")
-    
-    
+
+    client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
+
+
     def get_current_weather(location: str, unit: "str"):
         """Get the current weather in a given location"""
         if unit == "celsius":
             return f"The current temperature in {location} is 22°C."
         else:
             return f"The current temperature in {location} is 72°F."
-    
-    
+
+
     tools = [
         {
             "type": "function",
@@ -66,34 +67,39 @@ To use interleaved thinking with tool calls, specify a model that supports this 
                             "type": "string",
                             "description": "City and state, e.g.,     'San Francisco, CA'",
                         },
-                        "unit": {"type": "string", "enum":     ["celsius", "fahrenheit"]},
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
                     },
                     "required": ["location", "unit"],
                 },
             },
         }
     ]
-    messages = [{"role": "user", "content": "What's the weather in Fahrenheit like in San Francisco?"}]
+    messages = [
+        {
+            "role": "user",
+            "content": "What's the weather in Fahrenheit like in San Francisco?",
+        }
+    ]
     response = client.chat.completions.create(
         model=client.models.list().data[0].id,
         messages=messages,
         tools=tools,
         tool_choice="auto",
     )
-    
+
     tool_call = response.choices[0].message.tool_calls[0].function
-    
+
     messages.append(
         {
             "role": "assistant",
             "tool_calls": response.choices[0].message.tool_calls,
-            "reasoning": response.choices[0].message.reasoning, # append reasoning
+            "reasoning": response.choices[0].message.reasoning,  # append reasoning
         }
     )
-    
+
     # Simulate tool execution
     available_tools = {"get_weather": get_current_weather}
-    
+
     completion_tool_calls = response.choices[0].message.tool_calls
     for call in completion_tool_calls:
         tool_to_call = available_tools[call.function.name]

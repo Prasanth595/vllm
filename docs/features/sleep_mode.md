@@ -28,6 +28,7 @@ Enable sleep mode by passing `enable_sleep_mode=True` to the `LLM` class.
 
 ```python
 from vllm import LLM
+
 llm = LLM("Qwen/Qwen3-0.6B", enable_sleep_mode=True)
 ```
 

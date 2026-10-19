@@ -1276,7 +1276,7 @@ class TestTieringOffloadingManager:
         self._simulate_on_schedule_end()
 
         ctx = self._make_request_level_request("req_cascade")
-        self.manager.primary_tier.lookup = lambda key, req_context: (LookupResult.RETRY)
+        self.manager.primary_tier.lookup = lambda key, req_context: LookupResult.RETRY
 
         with pytest.raises(AssertionError):
             self.manager._cascade_existing_chunks_to_request_level_tiers(keys, ctx, {0})

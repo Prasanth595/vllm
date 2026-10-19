@@ -38,12 +38,12 @@ pip install vllm haystack-ai
     )
 
     response = generator.run(
-      messages=[ChatMessage.from_user("Hi. Can you help me plan my next trip to Italy?")]
+        messages=[ChatMessage.from_user("Hi. Can you help me plan my next trip to Italy?")]
     )
 
-    print("-"*30)
+    print("-" * 30)
     print(response)
-    print("-"*30)
+    print("-" * 30)
     ```
 
 ```console

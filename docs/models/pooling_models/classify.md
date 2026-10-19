@@ -70,8 +70,8 @@ Using (sequence) classification models as reward models. For more information, s
 The following [pooling parameters][vllm.PoolingParams] are supported.
 
 ```python
---8<-- "vllm/pooling_params.py:common-pooling-params"
---8<-- "vllm/pooling_params.py:classify-pooling-params"
+--8 < --"vllm/pooling_params.py:common-pooling-params"
+--8 < --"vllm/pooling_params.py:classify-pooling-params"
 ```
 
 ### `LLM.classify`
@@ -119,9 +119,9 @@ The following Classification API parameters are supported:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:completion-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:classify-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:completion-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:classify-params"
     ```
 
 The following extra parameters are supported:
@@ -129,9 +129,9 @@ The following extra parameters are supported:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:completion-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:classify-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:completion-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:classify-extra-params"
     ```
 
 #### Chat Parameters
@@ -141,9 +141,9 @@ For chat-like input (i.e. if `messages` is passed), the following parameters are
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:chat-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:classify-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:chat-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:classify-params"
     ```
 
 these extra parameters are supported instead:
@@ -151,9 +151,9 @@ these extra parameters are supported instead:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:chat-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:classify-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:chat-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:classify-extra-params"
     ```
 
 #### Example Requests
@@ -282,7 +282,7 @@ The calibration follows the transformation:
 The computation order is as follows:
 
 ```python
-logits -= logit_mean   # subtract mean (center scores)
+logits -= logit_mean  # subtract mean (center scores)
 logits /= logit_sigma  # divide by sigma (scale)
 logits = activation(logits)  # e.g. sigmoid
 ```

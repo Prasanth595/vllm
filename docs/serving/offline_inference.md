@@ -100,7 +100,10 @@ This API adds several batteries-included capabilities that simplify large-scale,
         config,
         preprocess=lambda row: {
             "messages": [
-                {"role": "system", "content": "You are a bot that completes unfinished haikus."},
+                {
+                    "role": "system",
+                    "content": "You are a bot that completes unfinished haikus.",
+                },
                 {"role": "user", "content": row["item"]},
             ],
             "sampling_params": {"temperature": 0.3, "max_tokens": 250},

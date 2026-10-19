@@ -30,11 +30,7 @@ from vllm import _custom_ops as ops
 ...
 W_q_packed = ops.machete_prepack_B(w_q, wtype)
 output = ops.machete_gemm(
-    a,
-    b_q=W_q_packed,
-    b_type=wtype,
-    b_scales=w_s,
-    b_group_size=group_size
+    a, b_q=W_q_packed, b_type=wtype, b_scales=w_s, b_group_size=group_size
 )
 ```
 

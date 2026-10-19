@@ -122,16 +122,22 @@ the pickler is an `_ArenaPickler` whose `reducer_override` *additionally* divert
 ```python
 class _ArenaPickler(pickle.Pickler):
     def reducer_override(self, obj):
-        rebuild_fn = _ARENA_REBUILD_FNS.get(type(obj))   # {Tensor: ..., Parameter: ...}
-        if (rebuild_fn is not None and obj.device.type == "cpu"
-                and obj.layout is torch.strided and obj.is_contiguous()
-                and not obj.requires_grad
-                and obj.numel() * obj.element_size() >= MIN_BYTES):
-            idx = self.arena.write_tensor(obj)        # ONE memcpy into a free slot
+        rebuild_fn = _ARENA_REBUILD_FNS.get(type(obj))  # {Tensor: ..., Parameter: ...}
+        if (
+            rebuild_fn is not None
+            and obj.device.type == "cpu"
+            and obj.layout is torch.strided
+            and obj.is_contiguous()
+            and not obj.requires_grad
+            and obj.numel() * obj.element_size() >= MIN_BYTES
+        ):
+            idx = self.arena.write_tensor(obj)  # ONE memcpy into a free slot
             if idx is not None:
-                return (rebuild_fn,
-                        (self.arena.shared_memory.name, idx, nbytes, dtype_str, shape))
-        return NotImplemented   # fall through to dispatch_table → _reduce_tensor
+                return (
+                    rebuild_fn,
+                    (self.arena.shared_memory.name, idx, nbytes, dtype_str, shape),
+                )
+        return NotImplemented  # fall through to dispatch_table → _reduce_tensor
 ```
 
 Note the exact-type dict lookup (not `isinstance`), matching how
@@ -160,7 +166,7 @@ The stub unpickles through a module-level rebuild function:
 
 ```python
 def _rebuild_arena_tensor(arena_name, slot_idx, nbytes, dtype_str, shape):
-    arena = _TENSOR_ARENAS[arena_name]             # this process's registry of attached arenas
+    arena = _TENSOR_ARENAS[arena_name]  # this process's registry of attached arenas
     # get_tensor: a view over the mapped slot — zero bytes copied
     return arena.get_tensor(slot_idx, nbytes, getattr(torch, dtype_str), shape)
 ```

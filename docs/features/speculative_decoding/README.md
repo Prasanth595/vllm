@@ -163,7 +163,7 @@ vllm serve <target-model> \
 
   llm = LLM(
       model="Qwen/Qwen3-8B",
-      speculative_config={                               
+      speculative_config={
           "method": "draft_model",
           "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
           "num_speculative_tokens": 3,

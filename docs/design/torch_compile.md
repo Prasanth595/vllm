@@ -83,7 +83,11 @@ shapes through the `compilation_config` parameter:
 
 ```python
 from vllm import LLM, SamplingParams
-from vllm.config.compilation import CompilationConfig, DynamicShapesConfig, DynamicShapesType
+from vllm.config.compilation import (
+    CompilationConfig,
+    DynamicShapesConfig,
+    DynamicShapesType,
+)
 
 # Example: Using backed_size_oblivious (experimental, safer than backed)
 llm = LLM(
@@ -92,17 +96,15 @@ llm = LLM(
         dynamic_shapes_config=DynamicShapesConfig(
             type=DynamicShapesType.BACKED_SIZE_OBLIVIOUS
         )
-    )
+    ),
 )
 
 # Example: Using unbacked (strongest guarantee against guards)
 llm = LLM(
     model="meta-llama/Llama-3.2-1B",
     compilation_config=CompilationConfig(
-        dynamic_shapes_config=DynamicShapesConfig(
-            type=DynamicShapesType.UNBACKED
-        )
-    )
+        dynamic_shapes_config=DynamicShapesConfig(type=DynamicShapesType.UNBACKED)
+    ),
 )
 
 # Generate outputs

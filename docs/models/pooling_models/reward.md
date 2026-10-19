@@ -81,8 +81,8 @@ The process reward models used for evaluating intermediate steps are crucial to 
 The following [pooling parameters][vllm.PoolingParams] are supported.
 
 ```python
---8<-- "vllm/pooling_params.py:common-pooling-params"
---8<-- "vllm/pooling_params.py:classify-pooling-params"
+--8 < --"vllm/pooling_params.py:common-pooling-params"
+--8 < --"vllm/pooling_params.py:classify-pooling-params"
 ```
 
 ### `LLM.encode`
@@ -110,7 +110,9 @@ Set `pooling_task="token_classify"` when using `LLM.encode` for token (outcome) 
 ```python
 from vllm import LLM
 
-llm = LLM(model="internlm/internlm2-1_8b-reward", runner="pooling", trust_remote_code=True)
+llm = LLM(
+    model="internlm/internlm2-1_8b-reward", runner="pooling", trust_remote_code=True
+)
 (output,) = llm.encode("Hello, my name is", pooling_task="token_classify")
 
 data = output.outputs.data
@@ -125,7 +127,9 @@ Set `pooling_task="token_classify"` when using `LLM.encode` for token (outcome) 
 from vllm import LLM
 
 llm = LLM(model="Qwen/Qwen2.5-Math-PRM-7B", runner="pooling")
-(output,) = llm.encode("Hello, my name is<extra_0><extra_0><extra_0>", pooling_task="token_classify")
+(output,) = llm.encode(
+    "Hello, my name is<extra_0><extra_0><extra_0>", pooling_task="token_classify"
+)
 
 data = output.outputs.data
 print(f"Data: {data!r}")

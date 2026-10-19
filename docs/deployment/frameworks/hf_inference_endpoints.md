@@ -106,7 +106,7 @@ This method applies to models with the [`transformers` library tag](https://hugg
                         "type": "text",
                         "text": "Convert this page to docling.",
                     },
-                ]
+                ],
             }
         ],
         stream=True,

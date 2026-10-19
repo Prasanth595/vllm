@@ -215,13 +215,17 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
     if i_tc1 < T:
         desc_Aqk.store([i_tc1, 0], (b_Aqk10 * scale).to(desc_Aqk.dtype))
 
-        b_b1 = tl.load(p_beta + (i_tc1 + o_bc) * HV, mask=i_tc1 + o_bc < T, other=0).to(tl.float32)
+        b_b1 = tl.load(p_beta + (i_tc1 + o_bc) * HV, mask=i_tc1 + o_bc < T, other=0).to(
+            tl.float32
+        )
         b_Akk10 = b_Akk10 * b_b1[:, None]
     if i_tc2 < T:
         desc_Aqk.store([i_tc2, 0], (b_Aqk20 * scale).to(desc_Aqk.dtype))
         desc_Aqk.store([i_tc2, BC], (b_Aqk21 * scale).to(desc_Aqk.dtype))
 
-        b_b2 = tl.load(p_beta + (i_tc2 + o_bc) * HV, mask=i_tc2 + o_bc < T, other=0).to(tl.float32)
+        b_b2 = tl.load(p_beta + (i_tc2 + o_bc) * HV, mask=i_tc2 + o_bc < T, other=0).to(
+            tl.float32
+        )
         b_Akk20 = b_Akk20 * b_b2[:, None]
         b_Akk21 = b_Akk21 * b_b2[:, None]
     if i_tc3 < T:
@@ -229,7 +233,9 @@ def chunk_kda_fwd_kernel_inter_solve_fused(
         desc_Aqk.store([i_tc3, BC], (b_Aqk31 * scale).to(desc_Aqk.dtype))
         desc_Aqk.store([i_tc3, 2 * BC], (b_Aqk32 * scale).to(desc_Aqk.dtype))
 
-        b_b3 = tl.load(p_beta + (i_tc3 + o_bc) * HV, mask=i_tc3 + o_bc < T, other=0).to(tl.float32)
+        b_b3 = tl.load(p_beta + (i_tc3 + o_bc) * HV, mask=i_tc3 + o_bc < T, other=0).to(
+            tl.float32
+        )
         b_Akk30 = b_Akk30 * b_b3[:, None]
         b_Akk31 = b_Akk31 * b_b3[:, None]
         b_Akk32 = b_Akk32 * b_b3[:, None]

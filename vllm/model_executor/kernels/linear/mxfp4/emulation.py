@@ -46,8 +46,8 @@ class EmulationMxfp4LinearKernel(MxFp4LinearKernel):
         super().__init__(config)
         if config.activation_quant_key is None:
             # no input Q/DQ for weight-only
-            self.quant_dequant_func: Callable[[torch.Tensor], torch.Tensor] = (
-                lambda x: x
+            self.quant_dequant_func: Callable[[torch.Tensor], torch.Tensor] = lambda x: (
+                x
             )
         else:
             self.quant_dequant_func = _ACTIVATION_QUANT_DEQUANT_FUNCS[

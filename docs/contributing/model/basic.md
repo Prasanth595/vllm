@@ -31,22 +31,29 @@ The initialization code should look like this:
     from vllm.config import VllmConfig
     from vllm.model_executor.layers.attention import Attention
 
+
     class MyAttention(nn.Module):
         def __init__(self, vllm_config: VllmConfig, prefix: str):
             super().__init__()
             self.attn = Attention(prefix=f"{prefix}.attn")
+
 
     class MyDecoderLayer(nn.Module):
         def __init__(self, vllm_config: VllmConfig, prefix: str):
             super().__init__()
             self.self_attn = MyAttention(prefix=f"{prefix}.self_attn")
 
+
     class MyModel(nn.Module):
         def __init__(self, vllm_config: VllmConfig, prefix: str):
             super().__init__()
             self.layers = nn.ModuleList(
-                [MyDecoderLayer(vllm_config, prefix=f"{prefix}.layers.{i}") for i in range(vllm_config.model_config.hf_config.num_hidden_layers)]
+                [
+                    MyDecoderLayer(vllm_config, prefix=f"{prefix}.layers.{i}")
+                    for i in range(vllm_config.model_config.hf_config.num_hidden_layers)
+                ]
             )
+
 
     class MyModelForCausalLM(nn.Module):
         def __init__(self, vllm_config: VllmConfig, prefix: str = ""):
@@ -75,8 +82,7 @@ def forward(
     positions: torch.Tensor,
     intermediate_tensors: IntermediateTensors | None = None,
     inputs_embeds: torch.Tensor | None = None,
-) -> torch.Tensor:
-    ...
+) -> torch.Tensor: ...
 ```
 
 !!! note

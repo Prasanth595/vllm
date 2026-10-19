@@ -90,10 +90,10 @@ GPTQModel quantized models are also supported directly through the LLM entrypoin
     outputs = llm.generate(prompts, sampling_params)
 
     # Print the outputs.
-    print("-"*50)
+    print("-" * 50)
     for output in outputs:
         prompt = output.prompt
         generated_text = output.outputs[0].text
         print(f"Prompt: {prompt!r}\nGenerated text: {generated_text!r}")
-        print("-"*50)
+        print("-" * 50)
     ```

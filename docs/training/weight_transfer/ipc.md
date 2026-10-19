@@ -52,12 +52,12 @@ from vllm.distributed.weight_transfer import (
 from vllm.distributed.weight_transfer.ipc_engine import IPCTrainerInitInfo
 
 engine = WeightTransferTrainerFactory.trainer_init(
-    init_info=IPCTrainerInitInfo(rank=0, packed=False),   # rank 0 is the sender
+    init_info=IPCTrainerInitInfo(rank=0, packed=False),  # rank 0 is the sender
     client=HTTPVLLMWeightSyncClient("http://localhost:8000"),
     source=ModuleSource(model),
 )
 
-engine.send_weights()   # once per sync
+engine.send_weights()  # once per sync
 ```
 
 `send_weights()` drives `start_weight_update`, the transfer itself, and

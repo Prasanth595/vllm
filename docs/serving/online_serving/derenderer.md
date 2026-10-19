@@ -47,7 +47,7 @@ Only `output_mode: "tokens"` responses are accepted which is the default. A resp
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-chat-request"
+    --8 < --"vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-chat-request"
     ```
 
 `/v1/completions/derender`:
@@ -55,7 +55,7 @@ Only `output_mode: "tokens"` responses are accepted which is the default. A resp
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-completion-request"
+    --8 < --"vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-completion-request"
     ```
 
 Streaming requests set `stream: true` and carry one generate chunk (`generate_chunk`) plus `stream_state` instead of a complete response.
@@ -65,7 +65,7 @@ Streaming requests set `stream: true` and carry one generate chunk (`generate_ch
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-chat-stream-request"
+    --8 < --"vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-chat-stream-request"
     ```
 
 `/v1/completions/derender` with `stream: true`:
@@ -73,7 +73,7 @@ Streaming requests set `stream: true` and carry one generate chunk (`generate_ch
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-completion-stream-request"
+    --8 < --"vllm/entrypoints/scale_out/token_in_token_out/protocol.py:derender-completion-stream-request"
     ```
 
 Both return `{"chunk": ..., "stream_state": ...}`. `chunk` is a `ChatCompletionStreamResponse` or `CompletionStreamResponse` and `stream_state` goes with the next call.

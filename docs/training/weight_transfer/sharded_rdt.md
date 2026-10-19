@@ -92,15 +92,15 @@ from vllm.distributed.weight_transfer.sharded_rdt_trainer import (
 
 engine = WeightTransferTrainerFactory.trainer_init(
     init_info=ShardedRDTTrainerInitInfo(
-        rank=rank,                                # rank 0 is the sender
-        num_consumers=8,                          # inference workers, fleet-wide
-        trainer_actor_namespace="my_namespace",   # must be visible to the workers
+        rank=rank,  # rank 0 is the sender
+        num_consumers=8,  # inference workers, fleet-wide
+        trainer_actor_namespace="my_namespace",  # must be visible to the workers
     ),
     client=HTTPVLLMWeightSyncClient("http://localhost:8000"),
     source=ModuleSource(model),
 )
 
-engine.send_weights()   # once per sync, on every trainer rank
+engine.send_weights()  # once per sync, on every trainer rank
 ```
 
 `trainer_init` and `send_weights` run on **every** trainer rank: each one owns a serve actor and takes part in the gathers, while only rank 0 drives the inference-side handshake. Any [`VLLMWeightSyncClient`](base.md#vllmweightsyncclient) works.

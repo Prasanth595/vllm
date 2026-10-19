@@ -58,10 +58,12 @@ Below is an example showing how to quantize a model using modelopt's PTQ API:
     # Select the quantization config, for example, FP8
     config = mtq.FP8_DEFAULT_CFG
 
+
     # Define a forward loop function for calibration
     def forward_loop(model):
         for data in calib_set:
             model(data)
+
 
     # PTQ with in-place replacement of quantized modules
     model = mtq.quantize(model, config, forward_loop)
@@ -87,6 +89,7 @@ The quantized checkpoint can then be deployed with vLLM. As an example, the foll
     ```python
     from vllm import LLM, SamplingParams
 
+
     def main():
         model_id = "nvidia/Llama-3.1-8B-Instruct-FP8"
 
@@ -108,6 +111,7 @@ The quantized checkpoint can then be deployed with vLLM. As an example, the foll
             prompt = output.prompt
             generated_text = output.outputs[0].text
             print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+
 
     if __name__ == "__main__":
         main()

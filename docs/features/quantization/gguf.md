@@ -55,22 +55,22 @@ You can also use the GGUF model directly through the LLM entrypoint:
 
       # In this script, we demonstrate how to pass input to the chat method:
       conversation = [
-         {
-            "role": "system",
-            "content": "You are a helpful assistant",
-         },
-         {
-            "role": "user",
-            "content": "Hello",
-         },
-         {
-            "role": "assistant",
-            "content": "Hello! How can I assist you today?",
-         },
-         {
-            "role": "user",
-            "content": "Write an essay about the importance of higher education.",
-         },
+          {
+              "role": "system",
+              "content": "You are a helpful assistant",
+          },
+          {
+              "role": "user",
+              "content": "Hello",
+          },
+          {
+              "role": "assistant",
+              "content": "Hello! How can I assist you today?",
+          },
+          {
+              "role": "user",
+              "content": "Write an essay about the importance of higher education.",
+          },
       ]
 
       # Create a sampling params object.
@@ -78,8 +78,8 @@ You can also use the GGUF model directly through the LLM entrypoint:
 
       # Create an LLM using repo_id:quant_type format.
       llm = LLM(
-         model="unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
-         tokenizer="Qwen/Qwen3-0.6B",
+          model="unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
+          tokenizer="Qwen/Qwen3-0.6B",
       )
       # Generate texts from the prompts. The output is a list of RequestOutput objects
       # that contain the prompt, generated text, and other information.
@@ -87,7 +87,7 @@ You can also use the GGUF model directly through the LLM entrypoint:
 
       # Print the outputs.
       for output in outputs:
-         prompt = output.prompt
-         generated_text = output.outputs[0].text
-         print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
+          prompt = output.prompt
+          generated_text = output.outputs[0].text
+          print(f"Prompt: {prompt!r}, Generated text: {generated_text!r}")
       ```

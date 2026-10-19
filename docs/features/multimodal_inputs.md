@@ -38,10 +38,12 @@ You can pass a single image to the `'image'` field of the multi-modal dictionary
     image = PIL.Image.open(...)
 
     # Single prompt inference
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"image": image},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"image": image},
+        }
+    )
 
     for o in outputs:
         generated_text = o.outputs[0].text
@@ -59,7 +61,7 @@ You can pass a single image to the `'image'` field of the multi-modal dictionary
             {
                 "prompt": "USER: <image>\nWhat's the color of this image?\nASSISTANT:",
                 "multi_modal_data": {"image": image_2},
-            }
+            },
         ]
     )
 
@@ -91,10 +93,12 @@ To substitute multiple images inside the same text prompt, you can pass in a lis
     image1 = PIL.Image.open(...)
     image2 = PIL.Image.open(...)
 
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"image": [image1, image2]},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"image": [image1, image2]},
+        }
+    )
 
     for o in outputs:
         generated_text = o.outputs[0].text
@@ -113,7 +117,7 @@ If using the [LLM.chat](../models/generative_models.md#llmchat) method, you can 
 
     llm = LLM(model="llava-hf/llava-1.5-7b-hf")
     image_url = "https://picsum.photos/id/32/512/512"
-    image_pil = ImageAsset('cherry_blossom').pil_image
+    image_pil = ImageAsset("cherry_blossom").pil_image
     image_embeds = torch.load(...)
 
     conversation = [
@@ -162,7 +166,9 @@ Multi-image input can be extended to perform video captioning. We show this with
     llm = LLM("Qwen/Qwen2-VL-2B-Instruct", limit_mm_per_prompt={"image": 4})
 
     # Create the request payload.
-    video_frames = ... # load your video making sure it only has the number of frames specified earlier.
+    video_frames = (
+        ...
+    )  # load your video making sure it only has the number of frames specified earlier.
     message = {
         "role": "user",
         "content": [
@@ -173,8 +179,11 @@ Multi-image input can be extended to perform video captioning. We show this with
         ],
     }
     for i in range(len(video_frames)):
-        base64_image = encode_image(video_frames[i]) # base64 encoding.
-        new_image = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+        base64_image = encode_image(video_frames[i])  # base64 encoding.
+        new_image = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+        }
         message["content"].append(new_image)
 
     # Perform inference and log output.
@@ -251,21 +260,29 @@ def make_caption_prompt(length: str = "normal") -> str:
     )
 
 
-query_out = llm.generate(
-    {
-        "prompt": make_query_prompt("What is shown in this image?"),
-        "multi_modal_data": {"image": image},
-    },
-    SamplingParams(max_tokens=64, temperature=0),
-)[0].outputs[0].text
+query_out = (
+    llm.generate(
+        {
+            "prompt": make_query_prompt("What is shown in this image?"),
+            "multi_modal_data": {"image": image},
+        },
+        SamplingParams(max_tokens=64, temperature=0),
+    )[0]
+    .outputs[0]
+    .text
+)
 
-caption_out = llm.generate(
-    {
-        "prompt": make_caption_prompt(),
-        "multi_modal_data": {"image": image},
-    },
-    SamplingParams(max_tokens=100, temperature=0),
-)[0].outputs[0].text
+caption_out = (
+    llm.generate(
+        {
+            "prompt": make_caption_prompt(),
+            "multi_modal_data": {"image": image},
+        },
+        SamplingParams(max_tokens=100, temperature=0),
+    )[0]
+    .outputs[0]
+    .text
+)
 
 print("query:", query_out)
 print("caption:", caption_out)
@@ -317,7 +334,7 @@ Instead of NumPy arrays, you can also pass `'torch.Tensor'` instances, as shown 
                     "total_pixels": 20480 * 28 * 28,
                     "min_pixels": 16 * 28 * 28,
                 },
-            ]
+            ],
         },
     ]
 
@@ -397,9 +414,9 @@ audio, sr = load_audio("long_audio.wav", sr=16000)
 chunks = split_audio(
     audio_data=audio,
     sample_rate=sr,
-    max_clip_duration_s=30.0,      # Maximum chunk length in seconds
-    overlap_duration_s=1.0,         # Search window for finding quiet split points
-    min_energy_window_size=1600,    # Window size for energy calculation (~100ms at 16kHz)
+    max_clip_duration_s=30.0,  # Maximum chunk length in seconds
+    overlap_duration_s=1.0,  # Search window for finding quiet split points
+    min_energy_window_size=1600,  # Window size for energy calculation (~100ms at 16kHz)
 )
 
 # Initialize Whisper model
@@ -409,10 +426,13 @@ sampling_params = SamplingParams(temperature=0, max_tokens=256)
 # Transcribe each chunk
 transcriptions = []
 for chunk in chunks:
-    outputs = llm.generate({
-        "prompt": "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>",
-        "multi_modal_data": {"audio": (chunk, sr)},
-    }, sampling_params)
+    outputs = llm.generate(
+        {
+            "prompt": "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>",
+            "multi_modal_data": {"audio": (chunk, sr)},
+        },
+        sampling_params,
+    )
     transcriptions.append(outputs[0].outputs[0].text)
 
 # Combine results
@@ -457,10 +477,12 @@ print(f"Original shape: {audio.shape}")  # e.g., torch.Size([2, 16000])
 # vLLM automatically converts to mono for Whisper-based models
 llm = LLM(model="openai/whisper-large-v3")
 
-outputs = llm.generate({
-    "prompt": "",
-    "multi_modal_data": {"audio": (audio.numpy(), sr)},
-})
+outputs = llm.generate(
+    {
+        "prompt": "",
+        "multi_modal_data": {"audio": (audio.numpy(), sr)},
+    }
+)
 ```
 
 No manual conversion is needed - vLLM handles the channel normalization automatically based on the model's requirements.
@@ -493,10 +515,12 @@ You must enable this feature via `enable_mm_embeds=True`.
     # For most models, `image_embeds` has shape: (num_images, image_feature_size, hidden_size)
     image_embeds = torch.load(...)
 
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"image": image_embeds},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"image": image_embeds},
+        }
+    )
 
     for o in outputs:
         generated_text = o.outputs[0].text
@@ -529,7 +553,7 @@ You must enable this feature via `enable_mm_embeds=True`.
         "image": {
             # Shape: (num_images, num_slices, hidden_size)
             # num_slices can differ for each image
-            "image_embeds": [torch.load(...) for image in images],  
+            "image_embeds": [torch.load(...) for image in images],
             # Shape: (num_images, 2)
             # image_sizes is needed to calculate details of the sliced image.
             "image_sizes": [image.size for image in images],
@@ -559,10 +583,12 @@ You can pass pre-computed audio embeddings similar to image embeddings:
     # (num_audios, audio_feature_size, hidden_size of LM)
     audio_embeds = torch.load(...)
 
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"audio": audio_embeds},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"audio": audio_embeds},
+        }
+    )
 
     for o in outputs:
         generated_text = o.outputs[0].text
@@ -586,16 +612,18 @@ When using multi-modal inputs, vLLM normally hashes each media item by content t
     img_a = Image.open("/path/to/a.jpg")
     img_b = Image.open("/path/to/b.jpg")
 
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"image": [img_a, img_b]},
-        # Provide stable IDs for caching.
-        # Requirements (matched by this example):
-        #  - Include every modality present in multi_modal_data.
-        #  - For lists, provide the same number of entries.
-        #  - Use None to fall back to content hashing for that item.
-        "multi_modal_uuids": {"image": ["sku-1234-a", None]},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"image": [img_a, img_b]},
+            # Provide stable IDs for caching.
+            # Requirements (matched by this example):
+            #  - Include every modality present in multi_modal_data.
+            #  - For lists, provide the same number of entries.
+            #  - Use None to fall back to content hashing for that item.
+            "multi_modal_uuids": {"image": ["sku-1234-a", None]},
+        }
+    )
 
     for o in outputs:
         print(o.outputs[0].text)
@@ -615,13 +643,15 @@ Using UUIDs, you can also skip sending media data entirely if you expect cache h
     prompt = "USER: <image><image>\nDescribe the differences.\nASSISTANT:"
     img_b = Image.open("/path/to/b.jpg")
 
-    outputs = llm.generate({
-        "prompt": prompt,
-        "multi_modal_data": {"image": [None, img_b]},
-        # Since img_a is expected to be cached, we can skip sending the actual
-        # image entirely.
-        "multi_modal_uuids": {"image": ["sku-1234-a", None]},
-    })
+    outputs = llm.generate(
+        {
+            "prompt": prompt,
+            "multi_modal_data": {"image": [None, img_b]},
+            # Since img_a is expected to be cached, we can skip sending the actual
+            # image entirely.
+            "multi_modal_uuids": {"image": ["sku-1234-a", None]},
+        }
+    )
 
     for o in outputs:
         print(o.outputs[0].text)
@@ -731,8 +761,12 @@ Then, you can use the OpenAI client as follows:
         print(f"Local image file not found at {image_file}, skipping local file test.")
 
     # Multi-image input inference
-    image_url_duck = "https://vllm-public-assets.s3.us-west-2.amazonaws.com/multimodal_asset/duck.jpg"
-    image_url_lion = "https://vllm-public-assets.s3.us-west-2.amazonaws.com/multimodal_asset/lion.jpg"
+    image_url_duck = (
+        "https://vllm-public-assets.s3.us-west-2.amazonaws.com/multimodal_asset/duck.jpg"
+    )
+    image_url_lion = (
+        "https://vllm-public-assets.s3.us-west-2.amazonaws.com/multimodal_asset/lion.jpg"
+    )
 
     chat_response = client.chat.completions.create(
         model="microsoft/Phi-3.5-vision-instruct",
@@ -1052,21 +1086,53 @@ When you extract video frames on the client side and send them as `video/jpeg` (
     # Pass video metadata via media_io_kwargs (server started with --trust-request-mm-kwargs)
     response = client.chat.completions.create(
         model="your-multimodal-model",
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "video_url", "video_url": {"url": video_url}},
-                {"type": "text", "text": "Describe what happens in this video."}
-            ]
-        }],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": video_url}},
+                    {"type": "text", "text": "Describe what happens in this video."},
+                ],
+            }
+        ],
         extra_body={
             "media_io_kwargs": {
                 "video": {
                     "fps": 30.0,
-                    "frames_indices": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90,
-                                       100, 110, 120, 130, 140, 150, 160, 170,
-                                       180, 190, 200, 210, 220, 230, 240, 250,
-                                       260, 270, 280, 290, 300, 310],
+                    "frames_indices": [
+                        0,
+                        10,
+                        20,
+                        30,
+                        40,
+                        50,
+                        60,
+                        70,
+                        80,
+                        90,
+                        100,
+                        110,
+                        120,
+                        130,
+                        140,
+                        150,
+                        160,
+                        170,
+                        180,
+                        190,
+                        200,
+                        210,
+                        220,
+                        230,
+                        240,
+                        250,
+                        260,
+                        270,
+                        280,
+                        290,
+                        300,
+                        310,
+                    ],
                     "total_num_frames": 900,
                     "duration": 30.0,
                 }
@@ -1122,14 +1188,16 @@ Then, you can use the OpenAI client as follows:
     from openai import OpenAI
     from vllm.assets.audio import AudioAsset
 
+
     def encode_base64_content_from_url(content_url: str) -> str:
         """Encode a content retrieved from a remote url to base64 format."""
 
         with requests.get(content_url) as response:
             response.raise_for_status()
-            result = base64.b64encode(response.content).decode('utf-8')
+            result = base64.b64encode(response.content).decode("utf-8")
 
         return result
+
 
     openai_api_key = "EMPTY"
     openai_api_base = "http://localhost:8000/v1"
@@ -1281,7 +1349,9 @@ The following example demonstrates how to pass image embeddings to the OpenAI se
     model = "llava-hf/llava-1.5-7b-hf"
     embeds = {
         "type": "image_embeds",
-        "image_embeds": tensor2base64(torch.load(...)),  # Shape: (image_feature_size, hidden_size)
+        "image_embeds": tensor2base64(
+            torch.load(...)
+        ),  # Shape: (image_feature_size, hidden_size)
         "uuid": image_url,  # Optional
     }
 
@@ -1291,7 +1361,9 @@ The following example demonstrates how to pass image embeddings to the OpenAI se
     embeds = {
         "type": "image_embeds",
         "image_embeds": {
-            "image_embeds": tensor2base64(torch.load(...)),  # Shape: (image_feature_size, hidden_size)
+            "image_embeds": tensor2base64(
+                torch.load(...)
+            ),  # Shape: (image_feature_size, hidden_size)
             "image_grid_thw": tensor2base64(torch.load(...)),  # Shape: (3,)
         },
         "uuid": image_url,  # Optional
@@ -1301,7 +1373,9 @@ The following example demonstrates how to pass image embeddings to the OpenAI se
     embeds = {
         "type": "image_embeds",
         "image_embeds": {
-            "image_embeds": tensor2base64(torch.load(...)),  # Shape: (num_slices, hidden_size)
+            "image_embeds": tensor2base64(
+                torch.load(...)
+            ),  # Shape: (num_slices, hidden_size)
             "image_sizes": tensor2base64(torch.load(...)),  # Shape: (2,)
         },
         "uuid": image_url,  # Optional
@@ -1380,39 +1454,48 @@ Just like with offline inference, you can skip sending media if you expect cache
 ??? code
 
     ```python
-        # Image/video/audio URL:
+    # Image/video/audio URL:
+    (
         {
             "type": "image_url",
             "image_url": None,
             "uuid": image_uuid,
         },
+    )
 
-        # image_embeds
+    # image_embeds
+    (
         {
             "type": "image_embeds",
             "image_embeds": None,
             "uuid": image_uuid,
         },
+    )
 
-        # input_audio:
+    # input_audio:
+    (
         {
             "type": "input_audio",
             "input_audio": None,
             "uuid": audio_uuid,
         },
+    )
 
-        # PIL Image:
+    # PIL Image:
+    (
         {
             "type": "image_pil",
             "image_pil": None,
             "uuid": image_uuid,
         },
+    )
 
-        # video_url:
+    # video_url:
+    (
         {
             "type": "video_url",
             "video_url": {},
             "uuid": video_uuid,
         },
-
+    )
     ```

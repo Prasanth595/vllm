@@ -30,8 +30,7 @@ vllm serve <model> \
 ```python
 from vllm import LLM, SamplingParams
 
-llm = LLM(model, return_sampling_mask=True,
-           logprobs_mode="processed_logprobs")
+llm = LLM(model, return_sampling_mask=True, logprobs_mode="processed_logprobs")
 output = llm.generate(
     "The capital of France is",
     SamplingParams(temperature=1.0, top_k=50, top_p=0.95, logprobs=1),

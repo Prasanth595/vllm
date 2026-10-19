@@ -12,6 +12,7 @@ IO Processor plugins implement the [`IOProcessor`][vllm.plugins.io_processors.in
 IOProcessorInput = TypeVar("IOProcessorInput")
 IOProcessorOutput = TypeVar("IOProcessorOutput")
 
+
 class IOProcessor(ABC, Generic[IOProcessorInput, IOProcessorOutput]):
     """Abstract interface for pre/post-processing of engine I/O."""
 

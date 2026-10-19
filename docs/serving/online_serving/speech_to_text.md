@@ -129,7 +129,7 @@ The following [sampling parameters](../../api/README.md#inference-parameters) ar
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/speech_to_text/transcription/protocol.py:transcription-sampling-params"
+    --8 < --"vllm/entrypoints/speech_to_text/transcription/protocol.py:transcription-sampling-params"
     ```
 
 The following extra parameters are supported:
@@ -137,7 +137,7 @@ The following extra parameters are supported:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/speech_to_text/transcription/protocol.py:transcription-extra-params"
+    --8 < --"vllm/entrypoints/speech_to_text/transcription/protocol.py:transcription-extra-params"
     ```
 
 ## Translations API
@@ -157,13 +157,13 @@ Code example: [examples/speech_to_text/openai/openai_translation_client.py](../.
 The following [sampling parameters](../../api/README.md#inference-parameters) are supported.
 
 ```python
---8<-- "vllm/entrypoints/speech_to_text/translation/protocol.py:translation-sampling-params"
+--8 < --"vllm/entrypoints/speech_to_text/translation/protocol.py:translation-sampling-params"
 ```
 
 The following extra parameters are supported:
 
 ```python
---8<-- "vllm/entrypoints/speech_to_text/translation/protocol.py:translation-extra-params"
+--8 < --"vllm/entrypoints/speech_to_text/translation/protocol.py:translation-extra-params"
 ```
 
 ## Realtime API

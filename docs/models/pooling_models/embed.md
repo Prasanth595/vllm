@@ -119,8 +119,8 @@ of the whole prompt are extracted from the normalized hidden state corresponding
 The following [pooling parameters][vllm.PoolingParams] are supported.
 
 ```python
---8<-- "vllm/pooling_params.py:common-pooling-params"
---8<-- "vllm/pooling_params.py:embed-pooling-params"
+--8 < --"vllm/pooling_params.py:common-pooling-params"
+--8 < --"vllm/pooling_params.py:embed-pooling-params"
 ```
 
 ### `LLM.embed`
@@ -190,10 +190,10 @@ The following Classification API parameters are supported:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:completion-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:encoding-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:embed-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:completion-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:encoding-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:embed-params"
     ```
 
 The following extra parameters are supported:
@@ -201,10 +201,10 @@ The following extra parameters are supported:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:completion-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:encoding-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:embed-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:completion-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:encoding-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:embed-extra-params"
     ```
 
 #### Chat Parameters
@@ -214,10 +214,10 @@ For chat-like input (i.e. if `messages` is passed), the following parameters are
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:chat-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:encoding-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:embed-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:chat-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:encoding-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:embed-params"
     ```
 
 these extra parameters are supported instead:
@@ -225,10 +225,10 @@ these extra parameters are supported instead:
 ??? code
 
     ```python
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:chat-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:encoding-extra-params"
-    --8<-- "vllm/entrypoints/pooling/base/protocol.py:embed-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:pooling-common-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:chat-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:encoding-extra-params"
+    --8 < --"vllm/entrypoints/pooling/base/protocol.py:embed-extra-params"
     ```
 
 #### Examples
@@ -243,6 +243,7 @@ which will be treated as a single prompt to the model. Here is a convenience fun
     from openai._types import NOT_GIVEN, NotGiven
     from openai.types.chat import ChatCompletionMessageParam
     from openai.types.create_embedding_response import CreateEmbeddingResponse
+
 
     def create_chat_embeddings(
         client: OpenAI,
@@ -287,6 +288,7 @@ and passing a list of `messages` in the request. Refer to the examples below for
 
         ```python
         from openai import OpenAI
+
         client = OpenAI(
             base_url="http://localhost:8000/v1",
             api_key="EMPTY",

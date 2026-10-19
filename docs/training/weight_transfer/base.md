@@ -240,7 +240,7 @@ class MyFrameworkWeightSyncClient:
     """Adapts one RL framework's rollout pool to the four weight-sync calls."""
 
     def __init__(self, rollout_pool):
-        self.pool = rollout_pool          # whatever your stack already has
+        self.pool = rollout_pool  # whatever your stack already has
 
     def init_weight_transfer_engine(self, init_info):
         # Fan out to every replica and block: all of them receive weights.
@@ -308,7 +308,7 @@ backend needs.
 ```python
 @dataclass
 class TrainerInitInfo:
-    backend: ClassVar[str]        # factory dispatch key
+    backend: ClassVar[str]  # factory dispatch key
     rank: int = field(kw_only=True)
 
     @property
@@ -363,7 +363,7 @@ class MyTrainerInitInfo(TrainerInitInfo):
     backend: ClassVar[str] = "my_backend"
 
     endpoint: str
-    chunk_size_bytes: int = 256 * 1024 * 1024   # a wire param: shipped to the worker
+    chunk_size_bytes: int = 256 * 1024 * 1024  # a wire param: shipped to the worker
 
 
 class MyTrainerWeightTransferEngine(TrainerWeightTransferEngine[MyTrainerInitInfo]):
@@ -399,9 +399,9 @@ class MyTrainerWeightTransferEngine(TrainerWeightTransferEngine[MyTrainerInitInf
 
     def send_weights(self) -> None:
         assert self.source is not None
-        meta = self.source.metadata()      # every rank: may be a collective
+        meta = self.source.metadata()  # every rank: may be a collective
         if not self.is_sender:
-            for _ in self.source:          # stay in the trainer-side collective
+            for _ in self.source:  # stay in the trainer-side collective
                 pass
             return
 
@@ -414,7 +414,7 @@ class MyTrainerWeightTransferEngine(TrainerWeightTransferEngine[MyTrainerInitInf
             }
         )
         for name, tensor in self.source:
-            ...                            # transmit
+            ...  # transmit
         self.client.finish_weight_update()
 ```
 
@@ -443,7 +443,9 @@ WeightTransferTrainerFactory.register_engine(
 )
 
 # Or register the class directly
-WeightTransferTrainerFactory.register_engine("my_backend", MyTrainerWeightTransferEngine)
+WeightTransferTrainerFactory.register_engine(
+    "my_backend", MyTrainerWeightTransferEngine
+)
 
 engine = WeightTransferTrainerFactory.trainer_init(
     init_info=MyTrainerInitInfo(rank=0, endpoint="..."),  # `backend` selects the engine
@@ -545,10 +547,12 @@ from vllm.distributed.weight_transfer.base import (
     WeightTransferUpdateInfo,
 )
 
+
 @dataclass
 class MyInitInfo(WeightTransferInitInfo):
     endpoint: str
-    chunk_size_bytes: int = 256 * 1024 * 1024   # must-agree wire param
+    chunk_size_bytes: int = 256 * 1024 * 1024  # must-agree wire param
+
 
 @dataclass
 class MyUpdateInfo(WeightTransferUpdateInfo):

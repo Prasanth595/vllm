@@ -97,6 +97,7 @@ Further update the model as follows:
         image_features = self.vision_encoder(image_input)
         return self.multi_modal_projector(image_features)
 
+
     def embed_multimodal(
         self,
         **kwargs: object,
@@ -202,7 +203,9 @@ Assuming that the memory usage increases with the number of tokens, the dummy in
         elif vision_feature_select_strategy == "full":
             selected_image_feature = selected_image_feature
         else:
-            raise ValueError(f"Unexpected select feature strategy: {self.config.vision_feature_select_strategy}")
+            raise ValueError(
+                f"Unexpected select feature strategy: {self.config.vision_feature_select_strategy}"
+            )
         image_features = self.multi_modal_projector(selected_image_feature)
         return image_features
         ```
@@ -215,7 +218,9 @@ Assuming that the memory usage increases with the number of tokens, the dummy in
 
     ```python
     # https://github.com/huggingface/transformers/blob/v4.47.1/src/transformers/models/clip/modeling_clip.py#L1094-L1102
-    hidden_states = self.embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
+    hidden_states = self.embeddings(
+        pixel_values, interpolate_pos_encoding=interpolate_pos_encoding
+    )
     hidden_states = self.pre_layrnorm(hidden_states)
 
     encoder_outputs = self.encoder(
@@ -233,7 +238,9 @@ Assuming that the memory usage increases with the number of tokens, the dummy in
         ```python
         # https://github.com/huggingface/transformers/blob/v4.47.1/src/transformers/models/clip/modeling_clip.py#L247-L257
         target_dtype = self.patch_embedding.weight.dtype
-        patch_embeds = self.patch_embedding(pixel_values.to(dtype=target_dtype))  # shape = [*, width, grid, grid]
+        patch_embeds = self.patch_embedding(
+            pixel_values.to(dtype=target_dtype)
+        )  # shape = [*, width, grid, grid]
         patch_embeds = patch_embeds.flatten(2).transpose(1, 2)
 
         class_embeds = self.class_embedding.expand(batch_size, 1, -1)
@@ -291,6 +298,7 @@ Assuming that the memory usage increases with the number of tokens, the dummy in
             width = height = hf_config.image_size
             return ImageSize(width=width, height=height)
 
+
         def get_dummy_mm_data(
             self,
             seq_len: int,
@@ -299,8 +307,7 @@ Assuming that the memory usage increases with the number of tokens, the dummy in
         ) -> MultiModalDataDict:
             num_images = mm_counts.get("image", 0)
 
-            target_width, target_height = \
-                self.info.get_image_size_with_most_features()
+            target_width, target_height = self.info.get_image_size_with_most_features()
 
             image_overrides = mm_options.get("image")
 
@@ -458,6 +465,7 @@ return a schema of the tensors outputted by the HF processor that are related to
             # Mistral3Processor requires text corresponding to the images
             return self.dummy_inputs.get_dummy_text(mm_counts)
 
+
         def _postprocess_hf_mm_data(
             self,
             hf_data: Mapping[str, object],
@@ -607,9 +615,7 @@ Each [PromptUpdate][vllm.multimodal.processing.PromptUpdate] instance specifies 
 
         ```python
         def get_insertion(item_idx: int):
-            images = mm_items.get_items(
-                "image", (ImageEmbeddingItems, ImageProcessorItems)
-            )
+            images = mm_items.get_items("image", (ImageEmbeddingItems, ImageProcessorItems))
 
             if isinstance(images, ImageEmbeddingItems):
                 num_image_tokens = images.get_feature_size(item_idx)
@@ -662,9 +668,7 @@ Each [PromptUpdate][vllm.multimodal.processing.PromptUpdate] instance specifies 
             assert isinstance(bos_token_id, int)
 
             def get_insertion(item_idx: int):
-                images = mm_items.get_items(
-                    "image", (ImageEmbeddingItems, ImageProcessorItems)
-                )
+                images = mm_items.get_items("image", (ImageEmbeddingItems, ImageProcessorItems))
 
                 if isinstance(images, ImageEmbeddingItems):
                     num_image_tokens = images.get_feature_size(item_idx)

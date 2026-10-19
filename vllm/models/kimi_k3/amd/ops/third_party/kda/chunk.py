@@ -97,20 +97,32 @@ def recompute_w_u_fwd_kernel(
     o_b = i_t * BT + tl.arange(0, BT)
     b_b = tl.load(beta + (bos + o_b) * H + i_h, mask=o_b < T, other=0).to(tl.float32)
 
-    desc_A = make_tensor_descriptor(A + (bos * H + i_h) * BT, [T, BT], [H * BT, 1], [BT, BT])
+    desc_A = make_tensor_descriptor(
+        A + (bos * H + i_h) * BT, [T, BT], [H * BT, 1], [BT, BT]
+    )
     b_A = desc_A.load([i_t * BT, 0])
 
-    desc_v = make_tensor_descriptor(v + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV])
-    desc_u = make_tensor_descriptor(u + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV])
+    desc_v = make_tensor_descriptor(
+        v + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV]
+    )
+    desc_u = make_tensor_descriptor(
+        u + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV]
+    )
     for i_v in range(tl.cdiv(V, BV)):
         b_v = desc_v.load([i_t * BT, i_v * BV])
         b_vb = (b_v * b_b[:, None]).to(b_v.dtype)
         b_u = tl.dot(b_A, b_vb, input_precision=DOT_PRECISION)
         desc_u.store([i_t * BT, i_v * BV], b_u.to(desc_u.dtype))
 
-    desc_w = make_tensor_descriptor(w + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
-    desc_k = make_tensor_descriptor(k + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
-    desc_gk = make_tensor_descriptor(gk + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
+    desc_w = make_tensor_descriptor(
+        w + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+    )
+    desc_k = make_tensor_descriptor(
+        k + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+    )
+    desc_gk = make_tensor_descriptor(
+        gk + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+    )
     for i_k in range(tl.cdiv(K, BK)):
         b_k = desc_k.load([i_t * BT, i_k * BK])
         b_kb = b_k * b_b[:, None]
@@ -118,8 +130,12 @@ def recompute_w_u_fwd_kernel(
         b_gk = desc_gk.load([i_t * BT, i_k * BK])
         b_kb *= exp2(b_gk)
         if STORE_QG:
-            desc_q = make_tensor_descriptor(q + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
-            desc_qg = make_tensor_descriptor(qg + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
+            desc_q = make_tensor_descriptor(
+                q + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+            )
+            desc_qg = make_tensor_descriptor(
+                qg + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+            )
             b_q = desc_q.load([i_t * BT, i_k * BK])
             b_qg = b_q * exp2(b_gk)
             desc_qg.store([i_t * BT, i_k * BK], b_qg.to(desc_qg.dtype))
@@ -133,7 +149,9 @@ def recompute_w_u_fwd_kernel(
             )
             b_kg = b_k * exp2(b_gn - b_gk)
 
-            desc_kg = make_tensor_descriptor(kg + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
+            desc_kg = make_tensor_descriptor(
+                kg + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+            )
             desc_kg.store([i_t * BT, i_k * BK], b_kg.to(desc_kg.dtype))
 
         b_w = tl.dot(b_A, b_kb.to(b_k.dtype))
@@ -240,9 +258,15 @@ def chunk_gla_fwd_kernel_o(
     m_s = tl.arange(0, BT)[:, None] >= tl.arange(0, BT)[None, :]
 
     b_o = tl.zeros([BT, BV], dtype=tl.float32)
-    desc_q = make_tensor_descriptor(q + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
-    desc_g = make_tensor_descriptor(g + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK])
-    desc_h = make_tensor_descriptor(h + (i_tg * H + i_h) * K * V, [V, K], [K, 1], [BV, BK])
+    desc_q = make_tensor_descriptor(
+        q + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+    )
+    desc_g = make_tensor_descriptor(
+        g + (bos * H + i_h) * K, [T, K], [H * K, 1], [BT, BK]
+    )
+    desc_h = make_tensor_descriptor(
+        h + (i_tg * H + i_h) * K * V, [V, K], [K, 1], [BV, BK]
+    )
     for i_k in range(tl.cdiv(K, BK)):
         # [BT, BK]
         b_q = desc_q.load([i_t * BT, i_k * BK])
@@ -256,9 +280,15 @@ def chunk_gla_fwd_kernel_o(
         # [BT, BV]
         if i_k >= 0:
             b_o += tl.dot(b_qg, tl.trans(b_h).to(b_qg.dtype))
-    desc_v = make_tensor_descriptor(v + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV])
-    desc_o = make_tensor_descriptor(o + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV])
-    desc_A = make_tensor_descriptor(A + (bos * H + i_h) * BT, [T, BT], [H * BT, 1], [BT, BT])
+    desc_v = make_tensor_descriptor(
+        v + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV]
+    )
+    desc_o = make_tensor_descriptor(
+        o + (bos * H + i_h) * V, [T, V], [H * V, 1], [BT, BV]
+    )
+    desc_A = make_tensor_descriptor(
+        A + (bos * H + i_h) * BT, [T, BT], [H * BT, 1], [BT, BT]
+    )
     # [BT, BV]
     b_v = desc_v.load([i_t * BT, i_v * BV])
     # [BT, BT]
@@ -387,8 +417,12 @@ def kda_gate_chunk_cumsum_vector_kernel(
 
     i_s -= 1
 
-    desc_s = make_tensor_descriptor(s + (bos * H + i_h) * S, [T, S], [H * S, 1], [BT, BS])
-    desc_o = make_tensor_descriptor(o + (bos * H + i_h) * S, [T, S], [H * S, 1], [BT, BS])
+    desc_s = make_tensor_descriptor(
+        s + (bos * H + i_h) * S, [T, S], [H * S, 1], [BT, BS]
+    )
+    desc_o = make_tensor_descriptor(
+        o + (bos * H + i_h) * S, [T, S], [H * S, 1], [BT, BS]
+    )
 
     b_s = desc_s.load([i_t * BT, i_s * BS]).to(tl.float32)
     if HAS_BIAS:
@@ -749,8 +783,12 @@ def kda_gate_fwd_kernel(
     stride_row = H * D
     stride_col = 1
 
-    desc_g = make_tensor_descriptor(g + i_h * D, [T, D], [stride_row, stride_col], [BT, BD])
-    desc_y = make_tensor_descriptor(y + i_h * D, [T, D], [stride_row, stride_col], [BT, BD])
+    desc_g = make_tensor_descriptor(
+        g + i_h * D, [T, D], [stride_row, stride_col], [BT, BD]
+    )
+    desc_y = make_tensor_descriptor(
+        y + i_h * D, [T, D], [stride_row, stride_col], [BT, BD]
+    )
 
     b_g = desc_g.load([n_t, 0]).to(tl.float32)
 

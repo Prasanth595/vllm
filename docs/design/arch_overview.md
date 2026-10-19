@@ -244,10 +244,12 @@ vision-language model.
                 quant_config: Optional[QuantizationConfig] = None,
                 lora_config: Optional[LoRAConfig] = None,
                 prefix: str = "",
-            ) -> None:
-                ...
+            ) -> None: ...
+
 
         from vllm.config import VllmConfig
+
+
         class MyNewModel(MyOldModel):
             def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
                 config = vllm_config.model_config.hf_config
@@ -256,7 +258,9 @@ vision-language model.
                 lora_config = vllm_config.lora_config
                 super().__init__(config, cache_config, quant_config, lora_config, prefix)
 
+
         from packaging import version
+
         if version.parse(__version__) >= version.parse("0.6.4"):
             MyModel = MyNewModel
         else:

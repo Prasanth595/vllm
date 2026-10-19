@@ -69,12 +69,24 @@ MAX_SEQUENCE_LENGTH = 2048
 ds = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft")
 ds = ds.shuffle(seed=42).select(range(NUM_CALIBRATION_SAMPLES))
 
+
 def preprocess(example):
     return {"text": tokenizer.apply_chat_template(example["messages"], tokenize=False)}
+
+
 ds = ds.map(preprocess)
 
+
 def tokenize(sample):
-    return tokenizer(sample["text"], padding=False, max_length=MAX_SEQUENCE_LENGTH, truncation=True, add_special_tokens=False)
+    return tokenizer(
+        sample["text"],
+        padding=False,
+        max_length=MAX_SEQUENCE_LENGTH,
+        truncation=True,
+        add_special_tokens=False,
+    )
+
+
 ds = ds.map(tokenize, remove_columns=ds.column_names)
 ```
 

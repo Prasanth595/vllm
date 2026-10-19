@@ -41,8 +41,11 @@ IR operations are declared using the `@register_op` decorator with a native PyTo
 from torch import Tensor
 from vllm.ir import register_op
 
+
 @register_op
-def rms_norm(x: Tensor, weight: Tensor | None, epsilon: float, variance_size: int | None = None) -> Tensor:
+def rms_norm(
+    x: Tensor, weight: Tensor | None, epsilon: float, variance_size: int | None = None
+) -> Tensor:
     """Weighted root-mean-square layer normalization"""
     orig_dtype = x.dtype
     x = x.to(torch.float32)
@@ -71,8 +74,13 @@ from vllm import ir
 
 rms_norm_no_var = lambda x, weight, epsilon, variance_size=None: variance_size is None
 
-@ir.ops.rms_norm.register_impl("vllm_c", supports_args=rms_norm_no_var, supported=current_platform.is_cuda_alike())
-def rms_norm(x: Tensor, weight: Tensor | None, epsilon: float, variance_size: int | None = None) -> Tensor:
+
+@ir.ops.rms_norm.register_impl(
+    "vllm_c", supports_args=rms_norm_no_var, supported=current_platform.is_cuda_alike()
+)
+def rms_norm(
+    x: Tensor, weight: Tensor | None, epsilon: float, variance_size: int | None = None
+) -> Tensor:
     output = torch.empty_like(x)
     torch.ops._C.rms_norm(output, x, weight, epsilon)
     return output
@@ -91,6 +99,7 @@ IR operations are imported and called directly in model code:
 ```python
 # vllm/model_executor/layers/layernorm.py
 from vllm import ir
+
 
 class RMSNorm(nn.Module):
     def __init__(self, hidden_size: int, eps: float = 1e-6):
@@ -151,7 +160,7 @@ llm = LLM(
                 "fused_add_rms_norm": ["vllm_c", "native"],
             }
         )
-    )
+    ),
 )
 ```
 
@@ -162,14 +171,14 @@ Each platform provides default priority lists that are automatically applied:
 ```python
 # CUDA/XPU/ROCm platform defaults (when compiling with Inductor)
 {
-  "rms_norm": ["native"],  # Native torch is default
-  "fused_add_rms_norm": ["native"],
+    "rms_norm": ["native"],  # Native torch is default
+    "fused_add_rms_norm": ["native"],
 }
 
 # CUDA platform defaults (eager or Dynamo-only)
 {
-  "rms_norm": ["vllm_c", "native"],
-  "fused_add_rms_norm": ["vllm_c", "native"],
+    "rms_norm": ["vllm_c", "native"],
+    "fused_add_rms_norm": ["vllm_c", "native"],
 }
 
 # ROCm platform defaults (future - currently same as CUDA)
@@ -204,11 +213,15 @@ in the FX graph without decomposition:
 ```python
 # Python code (epsilon=1e-5)
 x1 = ir.ops.rms_norm(x, weight, epsilon)
-x2, residual_out = ir.ops.fused_add_rms_norm.maybe_inplace(x1, residual, weight, epsilon)
+x2, residual_out = ir.ops.fused_add_rms_norm.maybe_inplace(
+    x1, residual, weight, epsilon
+)
 
 # FX graph after Dynamo tracing
-x1 = torch.ops.vllm_ir.rms_norm.default(x, weight, 1e-5); x = None
-out = torch.ops.vllm_ir.fused_add_rms_norm.maybe_inplace(x1, residual, weight, 1e-5); x1 = residual = None
+x1 = torch.ops.vllm_ir.rms_norm.default(x, weight, 1e-5)
+x = None
+out = torch.ops.vllm_ir.fused_add_rms_norm.maybe_inplace(x1, residual, weight, 1e-5)
+x1 = residual = None
 x2 = out[0]
 residual_out = out[1]
 ```
@@ -221,8 +234,10 @@ converting them to the functional `default` overload using the pre-grad custom p
 
 ```python
 # After functionalization
-x1 = torch.ops.vllm_ir.rms_norm.default(x, weight, 1e-5); x = None
-out = torch.ops.vllm_ir.fused_add_rms_norm.default(x1, residual, weight, 1e-5); x1 = residual = None
+x1 = torch.ops.vllm_ir.rms_norm.default(x, weight, 1e-5)
+x = None
+out = torch.ops.vllm_ir.fused_add_rms_norm.default(x1, residual, weight, 1e-5)
+x1 = residual = None
 x2 = out[0]
 residual_out = out[1]
 ```
@@ -258,13 +273,14 @@ using the **fake tensors** in the graph's metadata in place of op arguments:
 ```python
 # Implementation selection, same in eager dispatch and compile lowering
 def dispatch(*args) -> IrOpImpl:
-  for provider in priority_list:  # e.g., ["vllm_c", "native"]
-    impl = ir_op.impls[provider]
-    if not impl.supported:
-      continue
-    if impl.supports_args and not impl.supports_args(*args):
-      continue
-    return impl
+    for provider in priority_list:  # e.g., ["vllm_c", "native"]
+        impl = ir_op.impls[provider]
+        if not impl.supported:
+            continue
+        if impl.supports_args and not impl.supports_args(*args):
+            continue
+        return impl
+
 
 # make_fx uses torch.fx.symbolic_trace
 impl_graph = make_fx(selected_impl.impl_fn)
@@ -280,7 +296,7 @@ rms_norm = torch.ops.vllm_ir.rms_norm.default(x, weight, 1e-5)
 
 # After lowering (vllm_c implementation traced)
 # Note: Lowering does not currently functionalize, this will likely change in the future.
-empty =  torch.ops.aten.empty.memory_format(x.shape, ...)
+empty = torch.ops.aten.empty.memory_format(x.shape, ...)
 rms_norm = torch.ops._C.rms_norm(empty, x, weight, 1e-5)
 ```
 
@@ -292,7 +308,9 @@ the lowering pass inserts clones to preserve functional semantics:
 # Lowered with clones for safety
 clone_default = torch.ops.aten.clone.default(x)
 clone_default_1 = torch.ops.aten.clone.default(residual)
-fused_add_rms_norm = torch.ops._C.fused_add_rms_norm.default(clone_default, clone_default_1, weight, 1e-5)
+fused_add_rms_norm = torch.ops._C.fused_add_rms_norm.default(
+    clone_default, clone_default_1, weight, 1e-5
+)
 ```
 
 ### 5. Clone Cleanup
@@ -400,7 +418,9 @@ out, res_out = ir.ops.fused_add_rms_norm(x, residual, weight, epsilon)
 result = out + x  # OK: x is preserved
 
 # Option 2: Clone before maybe_inplace
-out, res_out = ir.ops.fused_add_rms_norm.maybe_inplace(x.clone(), residual, weight, epsilon)
+out, res_out = ir.ops.fused_add_rms_norm.maybe_inplace(
+    x.clone(), residual, weight, epsilon
+)
 result = out + x  # OK: x is preserved, clone was donated
 ```
 
@@ -444,10 +464,9 @@ return impl.impl_fn(*args)
 # Eager dispatch logic for default:
 impl: IrOpImpl = ir_op.dispatch(*args)
 if impl.inplace:
-  args = [
-    arg.clone() if i in ir_op.activations else arg
-    for i, arg in enumerate(args)
-  ]
+    args = [
+        arg.clone() if i in ir_op.activations else arg for i, arg in enumerate(args)
+    ]
 return impl.impl_fn(*args)
 ```
 
@@ -466,7 +485,9 @@ normed, residual = ir.ops.fused_add_rms_norm(hidden_states, input, weight, eps)
 
 # With maybe_inplace (0 allocations per layer when using in-place kernel)
 hidden_states = self.attention(input)
-normed, residual = ir.ops.fused_add_rms_norm.maybe_inplace(hidden_states, input, weight, eps)
+normed, residual = ir.ops.fused_add_rms_norm.maybe_inplace(
+    hidden_states, input, weight, eps
+)
 # Memory: normed (reuses hidden_states), residual (reuses input)
 ```
 
@@ -552,6 +573,7 @@ External platforms can register implementations without modifying vLLM:
 # In external package
 from vllm import ir
 
+
 @ir.ops.rms_norm.register_impl("my_platform", supported=is_my_platform())
 def rms_norm(x, weight, epsilon, variance_size=None):
     return my_platform.rms_norm(x, weight, epsilon)
@@ -561,11 +583,12 @@ Then configure priority to use your implementation:
 
 ```python
 class MyPlatform(Platform):
-  def get_default_ir_op_priority(self):
-    return IrOpPriorityConfig(rms_norm=['my_platform', 'native'])
+    def get_default_ir_op_priority(self):
+        return IrOpPriorityConfig(rms_norm=["my_platform", "native"])
+
 
 # Users can still override priority in the same way
-llm = LLM(ir_op_priority=IrOpPriorityConfig(rms_norm=['custom_oot_kernel']))
+llm = LLM(ir_op_priority=IrOpPriorityConfig(rms_norm=["custom_oot_kernel"]))
 ```
 
 ### Debugging and Observability

@@ -22,8 +22,9 @@ from pathlib import Path
 
 import torch
 
+from vllm.models.deepseek_v41.amd.specialized_decode.mono.common.plan import BLOCKS
+
 from .attention.plan import HEAD_DIM, HIDDEN, KEYS, Q_RANK, WINDOW, Dims
-from .common.plan import BLOCKS
 from .layer import (
     EPOCH_WORDS,
     MAX_TOKENS,

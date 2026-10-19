@@ -106,7 +106,18 @@ _ROOT = Path(__file__).resolve().parents[1]  # the mono package
 def source_digest(*paths: str) -> str:
     """sha256 of every ``.py`` file under ``paths`` (files or directories,
     relative to the mono package), each file's path and contents: one model's
-    kernel sources, so an edit to another model's rebuilds none of these."""
+    kernel sources, so an edit to another model's rebuilds none of these.
+
+    Args:
+        paths: Paths relative to the mono package.
+
+    Returns:
+        The digest's first 16 hex characters.
+
+    Raises:
+        FileNotFoundError: A path holds no ``.py`` file.
+
+    """
     h = hashlib.sha256()
     for rel in paths:
         root = _ROOT / rel

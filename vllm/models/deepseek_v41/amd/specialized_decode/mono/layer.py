@@ -22,14 +22,29 @@ from aiter.ops.flydsl.kernels import buffer_ops as bo
 from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr.typing import Int32, Int64, T
 
+from vllm.models.deepseek_v41.amd.specialized_decode.mono.common.mx import clamp_fp8
+from vllm.models.deepseek_v41.amd.specialized_decode.mono.common.ops import (
+    butterfly,
+    fp8_pack4,
+    peer_bases,
+    traced,
+)
+from vllm.models.deepseek_v41.amd.specialized_decode.mono.common.plan import (
+    WAVES,
+    first_task,
+    key_tuple,
+)
+from vllm.models.deepseek_v41.amd.specialized_decode.mono.common.sync import (
+    Mailbox,
+    preg,
+    publish,
+    sreg,
+)
+
 from .attention import back as mb_back
 from .attention import front as mb_front
 from .attention.device import BLOCKS, CM_DEV, THREADS, gstore, kernel_symbol, rsrc
 from .attention.plan import HIDDEN, WINDOW, Dims, back_scratch, front_scratch
-from .common.mx import clamp_fp8
-from .common.ops import butterfly, fp8_pack4, peer_bases, traced
-from .common.plan import WAVES, first_task, key_tuple
-from .common.sync import Mailbox, preg, publish, sreg
 from .sources import SOURCES
 from .stages import moe, seam
 from .stages.dims import Dims as StageDims

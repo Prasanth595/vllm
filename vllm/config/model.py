@@ -2017,6 +2017,10 @@ class ModelConfig:
         return self._model_info.supports_pp
 
     @property
+    def is_lora_supported(self) -> bool:
+        return self._model_info.supports_lora
+
+    @property
     def is_attention_free(self) -> bool:
         return self._model_info.is_attention_free
 

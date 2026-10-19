@@ -94,8 +94,8 @@ def test_bailing_factory_rejects_unsupported_scaling():
 
 
 @pytest.mark.skipif(
-    not current_platform.is_cuda_alike(),
-    reason="Skipping CUDA/ROCm-only test.",
+    not (current_platform.is_cuda_alike() or current_platform.is_xpu()),
+    reason="Skipping CUDA/ROCm/XPU-only test.",
 )
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("position_kind", ["text", "multimodal"])
@@ -104,7 +104,7 @@ def test_bailing_mrope_cuda_matches_native_for_strided_mla_views(
     dtype: torch.dtype,
     position_kind: str,
 ):
-    device = torch.device("cuda")
+    device = torch.device(current_platform.device_type)
     num_tokens = 17
     num_query_heads = 8
     with set_current_vllm_config(VllmConfig()):

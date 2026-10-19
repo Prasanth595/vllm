@@ -298,14 +298,9 @@ class CoreEngineProcManager:
         # pickles process args at start() time, sequentially per rank.
         user_assigned_gpu_ids = vllm_config.parallel_config.assigned_physical_gpu_ids
 
-        # CPU propagates its per-rank NUMA node assignment to the spawned
-        # EngineCore process via the device-control env var rather than
-        # through the in-process assigned_physical_gpu_ids global used by
-        # GPU/XPU (see set_cpu_visible_memory_nodes_env_var_for_dp_rank()).
-        # All ranks must be resolved up front, before any env var mutation
-        # begins: get_physical_gpu_ids_for_local_dp_rank()'s env-var fallback
-        # would otherwise see a previous rank's mutation and misinterpret it
-        # as a CUDA_VISIBLE_DEVICES-style already-narrowed device list.
+        # CPU workers read their NUMA node from the device-control env var.
+        # Resolve all ranks before mutating it, or a later rank would read an
+        # earlier rank's value as an already-narrowed device list.
         cpu_physical_gpu_ids_by_rank = (
             compute_cpu_physical_gpu_ids_by_dp_rank(
                 vllm_config, local_dp_ranks, user_assigned_gpu_ids
@@ -431,15 +426,7 @@ def compute_cpu_physical_gpu_ids_by_dp_rank(
     local_dp_ranks: list[int],
     user_assigned_gpu_ids: list[int] | None = None,
 ) -> dict[int, list[int]]:
-    """Resolve every local DP rank's NUMA node ids up front.
-
-    This must happen before any rank's device-control env var mutation
-    begins (see set_cpu_visible_memory_nodes_env_var_for_dp_rank()):
-    get_physical_gpu_ids_for_local_dp_rank()'s env-var fallback would
-    otherwise see a previous rank's mutation and misinterpret it as a
-    CUDA_VISIBLE_DEVICES-style already-narrowed device list, corrupting
-    later ranks' resolution.
-    """
+    """Resolve every local DP rank's NUMA node ids before any env var mutation."""
     world_size = vllm_config.parallel_config.world_size
     local_world_size = vllm_config.parallel_config.local_world_size
     evar = current_platform.device_control_env_var
@@ -458,16 +445,8 @@ def compute_cpu_physical_gpu_ids_by_dp_rank(
 def set_cpu_visible_memory_nodes_env_var_for_dp_rank(
     vllm_config: VllmConfig, physical_gpu_ids: list[int]
 ) -> None:
-    """Set the CPU device-control env var and assigned_physical_gpu_ids for
-    this rank, from ids already resolved by
-    compute_cpu_physical_gpu_ids_by_dp_rank().
-
-    Unlike GPU/XPU workers, which read assigned_physical_gpu_ids via the
-    in-process assigned_physical_gpu_ids global
-    (set_assigned_physical_gpu_ids()), CPU workers resolve their NUMA node
-    from the device-control env var (CPU_VISIBLE_MEMORY_NODES) directly, so
-    it must be set here, before the EngineCore process for this rank spawns.
-    """
+    """Set this rank's device-control env var (read by CPU workers) and
+    assigned_physical_gpu_ids."""
     vllm_config.parallel_config.assigned_physical_gpu_ids = physical_gpu_ids
     os.environ[current_platform.device_control_env_var] = ",".join(
         str(i) for i in physical_gpu_ids

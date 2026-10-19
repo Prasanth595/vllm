@@ -1057,14 +1057,7 @@ class TestDpDeviceIdSharding:
             )
 
     def test_cpu_visible_memory_nodes_env_var_set_per_rank(self, monkeypatch):
-        """Regression test for #47328: CPU DP ranks must bind disjoint NUMA
-        nodes. Unlike GPU/XPU, CPU workers resolve their NUMA node from the
-        device-control env var rather than the in-process
-        assigned_physical_gpu_ids global, so it must be set explicitly here.
-        Ranks must be resolved up front, before any env var mutation begins,
-        or a later rank's resolution would misread an earlier rank's
-        mutation as an already-narrowed CVD-style device list.
-        """
+        """Regression test for #47328: CPU DP ranks must bind disjoint NUMA nodes."""
         import types
 
         from vllm.platforms import current_platform

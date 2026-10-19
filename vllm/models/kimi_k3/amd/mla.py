@@ -196,17 +196,8 @@ class KimiK3MultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
         positions: torch.Tensor,
         hidden_states: torch.Tensor | QuantizedActivation,
         llama_4_scaling: torch.Tensor | None = None,
+        skip_o_proj: bool = False,
     ) -> torch.Tensor:
-        attn_out = self.forward_core(positions, hidden_states, llama_4_scaling)
-        return self.o_proj(attn_out)[0]
-
-    def forward_core(
-        self,
-        positions: torch.Tensor,
-        hidden_states: torch.Tensor | QuantizedActivation,
-        llama_4_scaling: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """The gated attention output: o_proj's input."""
         q_c = None
         num_tokens = (
             hidden_states.orig_shape[0]
@@ -321,4 +312,6 @@ class KimiK3MultiHeadLatentAttentionWrapper(MultiHeadLatentAttentionWrapper):
             else:
                 attn_out = attn_out * gate.sigmoid()
 
-        return attn_out
+        if skip_o_proj:  # the specialized decode runs o_proj in its kernel
+            return attn_out
+        return self.o_proj(attn_out)[0]

@@ -60,7 +60,6 @@ from vllm.model_executor.models.interfaces import (
     HasInnerState,
     IsHybrid,
     MixtureOfExperts,
-    SupportsMonoKernel,
     SupportsPP,
 )
 from vllm.model_executor.models.utils import (
@@ -71,12 +70,14 @@ from vllm.model_executor.models.utils import (
     make_layers,
     maybe_prefix,
 )
-from vllm.models.common import mono
-from vllm.models.common.mono.routing import Mono
 from vllm.models.kimi_k3.amd.kda import KimiK3DeltaAttention
 from vllm.models.kimi_k3.amd.latent_moe_runner import ROCmLatentMoERunner
 from vllm.models.kimi_k3.amd.mla import KimiK3MultiHeadLatentAttentionWrapper
 from vllm.models.kimi_k3.amd.ops.attn_res import attn_res
+from vllm.models.kimi_k3.amd.specialized_decode.hooks import SpecializedDecodeMixin
+from vllm.models.kimi_k3.amd.specialized_decode.runtime import (
+    specialized_decode_config,
+)
 from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.configs.kimi_linear import KimiLinearConfig
 from vllm.utils.math_utils import cdiv
@@ -784,8 +785,6 @@ class KimiLinearModel(nn.Module, EagleModelMixin):
         assert config.num_attention_heads % world_size == 0, (
             "num_attention_heads must be divisible by world_size"
         )
-        # the mono decode's layer kernels, attached after load
-        self.mono: Mono | None = None
 
     def make_empty_intermediate_tensors(
         self,
@@ -833,6 +832,7 @@ class KimiLinearModel(nn.Module, EagleModelMixin):
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None,
         inputs_embeds: torch.Tensor | None = None,
+        step=None,  # specialized_decode's plan
         **kwargs,
     ) -> torch.Tensor | IntermediateTensors | tuple[torch.Tensor, list[torch.Tensor]]:
         if get_pp_group().is_first_rank:
@@ -890,14 +890,9 @@ class KimiLinearModel(nn.Module, EagleModelMixin):
             self.layers[self.start_layer : self.end_layer],
             start=self.start_layer,
         ):
-            hidden_states, residual, prefix_delta = mono.forward_layer(
-                self.mono,
-                layer_idx,
-                layer,
-                positions,
-                hidden_states,
-                residual,
-                prefix_delta,
+            kernel = step.layer(layer_idx) if step is not None else None
+            hidden_states, residual, prefix_delta = (kernel or layer)(
+                positions, hidden_states, residual, prefix_delta
             )
             if (layer_idx + 1) in self.aux_hidden_state_layers:
                 self._maybe_add_hidden_state(
@@ -1065,12 +1060,18 @@ class KimiLinearModel(nn.Module, EagleModelMixin):
 
 
 class KimiLinearForCausalLM(
-    nn.Module, HasInnerState, SupportsPP, MixtureOfExperts, IsHybrid, SupportsMonoKernel
+    nn.Module,
+    HasInnerState,
+    SupportsPP,
+    MixtureOfExperts,
+    IsHybrid,
+    SpecializedDecodeMixin,
 ):
-    mono_spec = "vllm.models.kimi_k3.amd.mono.spec:MONO_SPEC"
-
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+        # raises for an unsupported deployment before any weight is allocated
+        decode_config = specialized_decode_config(vllm_config)
         super().__init__()
+        self.init_specialized_decode(decode_config)
         self.model_config = vllm_config.model_config
         self.vllm_config = vllm_config
         self.config = self.model_config.hf_config
@@ -1096,13 +1097,6 @@ class KimiLinearForCausalLM(
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
-    def process_weights_after_loading(self) -> None:
-        # the MonoKernels for this rank's layers; None when the switch is off
-        self.model.mono = mono.attach(self.model, self.vllm_config, self.mono_spec)
-
-    def step_health(self) -> torch.Tensor | None:
-        return mono.health(self.model.mono)
-
     def make_empty_intermediate_tensors(
         self,
         batch_size: int,
@@ -1119,8 +1113,9 @@ class KimiLinearForCausalLM(
         inputs_embeds: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor | IntermediateTensors:
+        step = self.plan_specialized_decode(positions, intermediate_tensors)
         hidden_states = self.model(
-            input_ids, positions, intermediate_tensors, inputs_embeds, **kwargs
+            input_ids, positions, intermediate_tensors, inputs_embeds, step, **kwargs
         )
         return hidden_states
 
@@ -1165,6 +1160,7 @@ class KimiLinearForCausalLM(
     ) -> torch.Tensor | None:
         # The model's final norm is applied here (not at the end of forward) so
         # that the pre-norm hidden states can be fed to the MTP draft model.
+        self.after_specialized_decode_step()
         hidden_states = self.model.norm(hidden_states, None)
         return self.logits_processor(self.lm_head, hidden_states)
 

@@ -15,7 +15,7 @@ use crate::backend::{
     ChatBackend, DynChatBackend, LoadModelBackendsOptions, LoadedModelBackends,
     NewChatOutputProcessorOptions,
 };
-use crate::error::Result;
+use crate::error::{Result, bail_chat_template_thrown};
 use crate::multimodal::{MultimodalConfigFiles, MultimodalModelInfo};
 use crate::output::{
     DefaultChatOutputProcessor, HarmonyChatOutputProcessor, validate_harmony_parser_overrides,
@@ -24,7 +24,7 @@ use crate::parser::unified::{HfTemplateError, ResponseTemplate};
 use crate::renderer::hf::{HfChatRenderer, MultimodalRenderInfo};
 use crate::renderer::{
     DeepSeekV4ChatRenderer, DeepSeekV32ChatRenderer, DeepSeekV41ChatRenderer, DynChatRenderer,
-    HarmonyChatRenderer, InklingChatRenderer, KimiK3ChatRenderer,
+    Glm5NextChatRenderer, HarmonyChatRenderer, InklingChatRenderer, KimiK3ChatRenderer,
 };
 use crate::request::ChatRequest;
 use crate::{DynChatOutputProcessor, RendererSelection};
@@ -98,6 +98,17 @@ impl HfChatBackend {
                 tokenizer.clone(),
                 options.default_chat_template_kwargs,
             )),
+            RendererSelection::Glm5Next => {
+                if options.chat_template.is_some() {
+                    bail_chat_template_thrown!(
+                        "glm5_next does not accept --chat-template; use --tokenizer-mode hf for Jinja"
+                    );
+                }
+                Arc::new(
+                    Glm5NextChatRenderer::new(options.default_chat_template_kwargs)
+                        .with_multimodal(model_type == "glm5_next"),
+                )
+            }
         };
 
         info!(

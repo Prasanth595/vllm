@@ -22,7 +22,7 @@ use llm_multimodal::{
     AsyncMultiModalTracker, AudioClip, AudioPreProcessor, EncoderFieldLayouts, FieldLayout,
     ImageFrame, MediaConnector, MediaConnectorConfig, MediaContentPart, Modality, ModelMetadata,
     ModelProcessorSpec, ModelRegistry, PreProcessorConfig, PreprocessedEncoderInputs,
-    PromptReplacement, Tokenizer as TokenResolver, TrackedMedia, VideoClip, VisionPreProcessor,
+    PromptReplacement, Tokenizer as TokenResolver, TrackedMedia, VisionPreProcessor,
     VisionPreprocessingContext,
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +39,7 @@ use crate::request::{ChatContent, ChatContentPart, ChatMessage, ChatRequest};
 
 mod audio;
 mod expand;
+mod glm5_next;
 mod image;
 mod input;
 mod item;
@@ -62,6 +63,7 @@ pub struct MultimodalModelInfo {
     video: Option<VisionModalitySupport>,
     audio: Option<AudioModalitySupport>,
     media_connector: Arc<MediaConnector>,
+    video_sampling: Option<glm5_next::video::VideoSampling>,
     /// Maximum number of input items allowed per prompt for each modality.
     limit_mm_per_prompt: MmLimitPerPrompt,
 }
@@ -133,6 +135,10 @@ impl MultimodalModelContext {
     /// Resolve a static model processor spec for one loaded model.
     fn resolve_model_spec(&self) -> Option<&'static dyn ModelProcessorSpec> {
         static REGISTRY: LazyLock<ModelRegistry> = LazyLock::new(ModelRegistry::new);
+        static GLM: glm5_next::Glm5NextSpec = glm5_next::Glm5NextSpec;
+        if GLM.matches(&self.metadata()) {
+            return Some(&GLM);
+        }
         REGISTRY.lookup(&self.metadata())
     }
 
@@ -318,7 +324,7 @@ fn load_preprocessor_config(
 struct FetchedMedia {
     images: Vec<Arc<ImageFrame>>,
     image_uuids: Vec<Option<String>>,
-    videos: Vec<Arc<VideoClip>>,
+    videos: Vec<video::FetchedVideo>,
     video_uuids: Vec<Option<String>>,
     audios: Vec<Arc<AudioClip>>,
     audio_uuids: Vec<Option<String>>,
@@ -402,6 +408,13 @@ impl MultimodalModelInfo {
         video_preprocessor_config: PreProcessorConfig,
         limit_mm_per_prompt: MmLimitPerPrompt,
     ) -> Result<Option<Self>> {
+        let video_sampling = if glm5_next::Glm5NextSpec.matches(&context.metadata()) {
+            Some(glm5_next::video::VideoSampling::new(
+                &video_preprocessor_config,
+            )?)
+        } else {
+            None
+        };
         let (image, video) = Self::resolve_vision_lanes(
             &context,
             preprocessor_config.clone(),
@@ -439,6 +452,7 @@ impl MultimodalModelInfo {
             video,
             audio,
             media_connector,
+            video_sampling,
             limit_mm_per_prompt,
         }))
     }
@@ -901,11 +915,24 @@ impl MultimodalModelInfo {
     )]
     async fn fetch_media(&self, media_parts: Vec<MediaContentPart>) -> Result<FetchedMedia> {
         let mut tracker = AsyncMultiModalTracker::new(Arc::clone(&self.media_connector));
+        let mut glm_videos = Vec::new();
         for part in media_parts {
+            if let (Some(sampling), MediaContentPart::VideoUrl { url, uuid }) =
+                (&self.video_sampling, &part)
+            {
+                let url = url.clone();
+                let uuid = uuid.clone();
+                glm_videos.push(async move { Ok::<_, Error>((sampling.fetch(url).await?, uuid)) });
+                continue;
+            }
             tracker.push_part(part)?;
         }
 
-        let mut tracker_output = tracker.finalize().await?;
+        let (tracker_output, glm_videos) = tokio::try_join!(
+            async { tracker.finalize().await.map_err(Error::from) },
+            futures::future::try_join_all(glm_videos),
+        )?;
+        let mut tracker_output = tracker_output;
 
         let images = tracker_output
             .data
@@ -921,19 +948,26 @@ impl MultimodalModelInfo {
             .collect::<Result<Vec<_>>>()?;
         let image_uuids = tracker_output.uuids.remove(&Modality::Image).unwrap_or_default();
 
-        let videos = tracker_output
+        let mut videos = tracker_output
             .data
             .remove(&Modality::Video)
             .unwrap_or_default()
             .into_iter()
             .map(|media| match media {
-                TrackedMedia::Video(clip) => Ok(clip),
+                TrackedMedia::Video(clip) => Ok(video::FetchedVideo {
+                    clip,
+                    timestamps: None,
+                }),
                 _ => Err(multimodal!(
                     "tracker returned non-video media for the video modality"
                 )),
             })
             .collect::<Result<Vec<_>>>()?;
-        let video_uuids = tracker_output.uuids.remove(&Modality::Video).unwrap_or_default();
+        let mut video_uuids = tracker_output.uuids.remove(&Modality::Video).unwrap_or_default();
+        for (video, uuid) in glm_videos {
+            videos.push(video);
+            video_uuids.push(uuid);
+        }
 
         let audios = tracker_output
             .data

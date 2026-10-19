@@ -311,7 +311,7 @@ FLOW_CASES = [
             prefix='{"a"',
             raw_drafts=("z", ":", ' "', "b"),
             expected_validated=(),
-            expected_row_pattern="CUUUU",
+            expected_row_pattern="CCCCC",
             expected_reasoning=True,
             expect_terminated=False,
             reasoning_ended=True,
@@ -323,7 +323,7 @@ FLOW_CASES = [
             prefix='{"a"',
             raw_drafts=(":", "z", ' "', "b"),
             expected_validated=(":",),
-            expected_row_pattern="CCUUU",
+            expected_row_pattern="CCCCC",
             expected_reasoning=True,
             expect_terminated=False,
             reasoning_ended=True,
@@ -389,7 +389,7 @@ FLOW_CASES = [
         FlowCase(
             raw_drafts=(" ", THINK_END, "z", "{"),
             expected_validated=(" ", THINK_END),
-            expected_row_pattern="UUCUU",
+            expected_row_pattern="UUCCC",
             expected_reasoning=True,
             expect_terminated=False,
         ),
@@ -399,7 +399,7 @@ FLOW_CASES = [
         FlowCase(
             raw_drafts=(" ", THINK_END, "{", "z"),
             expected_validated=(" ", THINK_END, "{"),
-            expected_row_pattern="UUCCU",
+            expected_row_pattern="UUCCC",
             expected_reasoning=True,
             expect_terminated=False,
         ),
@@ -431,7 +431,8 @@ FLOW_CASES = [
             raw_drafts=(" ", IMPLICIT_THINK_END, "{", "}"),
             expected_validated=(" ",),
             # The grammar cannot start with the marker, so reasoning rows mask it.
-            expected_row_pattern="RRUUU",
+            # The later rows reuse the rejection row and are discarded.
+            expected_row_pattern="RRRRR",
             expected_reasoning=False,
             expect_terminated=False,
             engine_reasoner=True,
@@ -617,10 +618,12 @@ def test_initial_constraint_activation(
     ("raw_drafts", "expected_validated", "expected_row_pattern", "terminated"),
     [
         pytest.param(("1", "2"), None, "CCC", False, id="all_valid"),
-        # EOS is only valid once the regex has matched; rows after EOS are
-        # unconstrained since the request stops there.
+        # A rejected draft must not unconstrain the later draft or bonus rows.
+        pytest.param(("1", "z", "2"), ("1",), "CCCC", False, id="rejected_draft"),
+        # EOS is only valid once the regex has matched. After an invalid
+        # draft, the later rows are discarded by rejection sampling.
         pytest.param(("1", EOS, "2"), ("1", EOS), "CCUU", True, id="terminates"),
-        pytest.param((EOS, "1"), (), "CUU", False, id="early_eos"),
+        pytest.param((EOS, "1"), (), "CCC", False, id="early_eos"),
     ],
 )
 def test_regex_flow(

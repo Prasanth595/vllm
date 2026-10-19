@@ -452,74 +452,43 @@ class StructuredOutputManager:
                 masked_ids = (
                     self._masked_reasoning_ends(request) if constraint_start else ()
                 )
-
-                # TODO(yzong-rh): Remove this validate_tokens() check once
-                # accept_tokens() is atomic-on-failure for every backend.
-                # Some backends can partially advance or enter an error state
-                # on rejection.
-                grammar_valid_end = grammar_start
-                if grammar_start < len(unpadded_tokens):
-                    grammar_valid_end += len(
-                        grammar.validate_tokens(unpadded_tokens[grammar_start:])
-                    )
+                # Diffusion LLMs don't sample a bonus token after the
+                # scheduled positions, so skip its bitmask in that case.
+                if not (is_diffusion and req_tokens):
+                    tokens_to_mask = req_tokens + [-1]
 
                 state_advancements = 0
                 seen_padding = False
                 # Row filled from the last valid grammar state before a draft
                 # was rejected; later rows reuse it rather than unconstraining.
-                failed_index: int | None = None
+                grammar_invalid_index: int | None = None
                 bitmask = self._grammar_bitmask
-                for i, token in enumerate(req_tokens):
+                for i, token in enumerate(tokens_to_mask):
                     if seen_padding:
                         self._fill_bitmasks(((grammar, cumulative_index, False, ()),))
                         cumulative_index += 1
                         continue
 
-                    if failed_index is not None:
+                    if grammar_invalid_index is not None:
                         seen_padding = token == -1
-                        bitmask[cumulative_index].copy_(bitmask[failed_index])
+                        bitmask[cumulative_index].copy_(bitmask[grammar_invalid_index])
                         cumulative_index += 1
                         continue
 
-                    apply_bitmask = constraint_start <= i <= grammar_valid_end
+                    apply_bitmask = i >= constraint_start
                     row_masked = masked_ids if i < constraint_start else ()
                     self._fill_bitmasks(
                         ((grammar, cumulative_index, apply_bitmask, row_masked),)
                     )
                     if token == -1:
                         seen_padding = True
-                    elif grammar_start <= i < grammar_valid_end:
+                    elif i >= grammar_start:
                         if not grammar.is_terminated() and grammar.accept_tokens(
                             req_id, [token]
                         ):
                             state_advancements += 1
                         else:
-                            failed_index = cumulative_index
-                            logger.error(
-                                "Unexpected: grammar terminated or rejected draft "
-                                "token %s for request %s during bitmask fill.",
-                                token,
-                                req_id,
-                            )
-                    cumulative_index += 1
-
-                # Diffusion LLMs don't sample a bonus token after the
-                # scheduled positions, so skip its bitmask in that case.
-                if not (is_diffusion and req_tokens):
-                    if seen_padding:
-                        self._fill_bitmasks(((grammar, cumulative_index, False, ()),))
-                    elif failed_index is not None:
-                        bitmask[cumulative_index].copy_(bitmask[failed_index])
-                    else:
-                        bonus_apply = (
-                            constraint_start <= len(req_tokens) <= grammar_valid_end
-                        )
-                        row_masked = (
-                            masked_ids if len(req_tokens) < constraint_start else ()
-                        )
-                        self._fill_bitmasks(
-                            ((grammar, cumulative_index, bonus_apply, row_masked),)
-                        )
+                            grammar_invalid_index = cumulative_index
                     cumulative_index += 1
 
                 if state_advancements > 0:

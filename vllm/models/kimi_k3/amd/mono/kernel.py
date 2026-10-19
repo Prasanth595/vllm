@@ -23,10 +23,20 @@ from vllm.models.common.mono.spec import MonoStep
 from vllm.models.kimi_k3.amd.mono.runner import MonoRunner
 
 
-def _k2_key(layer, runner: MonoRunner, tokens: int, reset: bool):
+def _k2_key(layer, runner: MonoRunner, tokens: int, reset: bool, m1b: bool = False):
+    """``m1b``: an MLA layer's K2 that runs its M1b first (``runner.fuse_m1b``)."""
     from vllm.models.kimi_k3.amd.ops.mono import layer as k2
 
     m = layer.mlp
+    fused = (
+        dict(
+            m1b_qlen=runner.num_spec + 1,
+            m1b_ranks=runner.dcp,
+            m1b_off=runner.mla_post_off,
+        )
+        if m1b
+        else {}
+    )
     return k2.K2Build(
         tokens=tokens,
         nblocks=layer.prev_valid_blocks + (1 if reset else 0),
@@ -34,13 +44,15 @@ def _k2_key(layer, runner: MonoRunner, tokens: int, reset: bool):
         eps=layer.mlp_res_norm.variance_epsilon,
         out_eps=layer.post_attention_layernorm.variance_epsilon,
         ln_eps=m.routed_expert_norm.variance_epsilon,
+        **fused,
         **runner.fault,
     )
 
 
-def _k2(layer, runner: MonoRunner, core, prefix, blocks, reset=False):
+def _k2(layer, runner: MonoRunner, core, prefix, blocks, reset=False, m1b_in=None):
     """K2 from ``core`` (o_proj's input): ``prefix`` updated in place (written,
-    when ``reset``), the MoE output returned."""
+    when ``reset``), the MoE output returned. ``m1b_in``: ``mla_post``'s inputs,
+    when this launch runs M1b and writes ``core`` itself."""
     from vllm.models.kimi_k3.amd.ops.mono import layer as k2
     from vllm.models.kimi_k3.amd.ops.mono.attention.kda import HIDDEN
     from vllm.models.kimi_k3.amd.ops.mono.stages import moe
@@ -52,7 +64,7 @@ def _k2(layer, runner: MonoRunner, core, prefix, blocks, reset=False):
         w_up = w_up.narrow(0, runner.rank * moe.UP_N, moe.UP_N)
     out = torch.empty_like(prefix)
     k2.k2_launch(
-        _k2_key(layer, runner, core.size(0), reset),
+        _k2_key(layer, runner, core.size(0), reset, m1b_in is not None),
         core=core,
         w_o=layer.self_attn.o_proj.weight,
         prefix=prefix,
@@ -73,6 +85,7 @@ def _k2(layer, runner: MonoRunner, core, prefix, blocks, reset=False):
         w_up=w_up,
         out=out,
         layer=128 + layer.layer_idx,
+        m1b_in=m1b_in,
         **runner.launch_args(),
         **runner.peer_args(),
     )
@@ -274,6 +287,9 @@ class FfnLayer(_Layer):
 
     def warmup_keys(self) -> list:
         # a layer after another always has a pending delta
+        if self.runner.fuse_m1b:
+            k2 = _k2_key(self.layer, self.runner, self.width, False, True)
+            return [self._m1a_key(True), k2]
         m1b = self._m1b_key(self.runner.num_spec + 1)
         return [self._m1a_key(True), m1b, *super().warmup_keys()]
 
@@ -326,8 +342,7 @@ class FfnLayer(_Layer):
         )
         o, lse = mla.attend(w, q8, kv_cache, md)
         core = torch.empty_like(gate)
-        mla_back.mla_post(
-            self._m1b_key(runner.num_spec + 1),
+        m1b_in = dict(
             o=o,
             lse=lse,
             seq_lens=md.decode.seq_lens,
@@ -335,8 +350,15 @@ class FfnLayer(_Layer):
             w_v=a.W_V,
             w_v_scale=a.W_V_scale,
             gate=gate,
+        )
+        if runner.fuse_m1b:
+            out = _k2(layer, runner, core, prefix_sum, block_residual, m1b_in=m1b_in)
+            return prefix_sum, block_residual, out
+        mla_back.mla_post(
+            self._m1b_key(runner.num_spec + 1),
             core=core,
             layer=layer.layer_idx,
+            **m1b_in,
             **runner.launch_args(),
             **runner.peer_args(),
         )

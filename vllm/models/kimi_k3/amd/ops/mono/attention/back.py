@@ -125,8 +125,9 @@ def o_loads(c, rg):
 
 
 @traced
-def load_core(c, t0, n):
-    """Core rows t0 .. t0 + n (of S x 1536 bf16) -> LDS, rows padded."""
+def load_core(c, t0, n, cm=0):
+    """Core rows t0 .. t0 + n (of S x 1536 bf16) -> LDS, rows padded; ``cm``
+    CM_DEV when this launch's own CTAs wrote them (K2's fused M1b)."""
     tid = c["tid"]
     words = n * OK // 8
     row = OK + LDS_PAD
@@ -138,6 +139,7 @@ def load_core(c, t0, n):
                 (t0 * (OK // 8) + e) * 4,
                 vec_width=4,
                 dtype=T.i32,
+                cache_modifier=cm,
             )
         )
         t = e // (OK // 8)

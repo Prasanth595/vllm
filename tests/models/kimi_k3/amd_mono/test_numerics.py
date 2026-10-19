@@ -703,11 +703,22 @@ def _k2_inputs(rank: int, device, S: int = 8):
     }
 
 
-def _k2_launch(runner, w, mw, prefix, out, reset: bool, nb: int = 4, layer: int = 3):
+def _k2_launch(
+    runner, w, mw, prefix, out, reset: bool, nb: int = 4, layer: int = 3, m1b=None
+):
+    """``m1b``: (``mla_post``'s inputs, qlen, ranks) to run M1b in K2's launch."""
     from vllm.models.kimi_k3.amd.ops.mono import layer as k2
 
+    m1b_in, fused = None, {}
+    if m1b is not None:
+        m1b_in, q, ranks = m1b
+        fused = dict(m1b_qlen=q, m1b_ranks=ranks, m1b_off=runner.mla_post_off)
     key = k2.K2Build(
-        tokens=w["core"].size(0), nblocks=nb + int(reset), reset=reset, **runner.fault
+        tokens=w["core"].size(0),
+        nblocks=nb + int(reset),
+        reset=reset,
+        **fused,
+        **runner.fault,
     )
     k2.k2_launch(
         key,
@@ -720,6 +731,7 @@ def _k2_launch(runner, w, mw, prefix, out, reset: bool, nb: int = 4, layer: int 
         in_nw=w["in_nw"],
         out=out,
         layer=128 + layer,
+        m1b_in=m1b_in,
         **_moe_args(mw),
         **runner.launch_args(),
         **runner.peer_args(),
@@ -897,9 +909,9 @@ def _m1_worker(
             **runner.peer_args(),
         )
 
-    def post(b, q, gate, core, layer=3):
+    def post(b, q, gate, core, layer=3, ranks=R):
         key = MlaPostBuild(
-            tokens=core.size(0), qlen=q, ranks=R, peer_off=runner.mla_post_off
+            tokens=core.size(0), qlen=q, ranks=ranks, peer_off=runner.mla_post_off
         )
         mla_post(
             key,
@@ -971,38 +983,74 @@ def _m1_worker(
         err = _rel_l2(core, ref)
         assert err < 1e-2 and _cos(core, ref) > COS_MIN, (S, q, err)
 
+    def m1b_in(b, gate):
+        keys = ("o", "lse", "seq_lens", "qsl", "w_v", "w_v_scale")
+        return dict({n: b[n] for n in keys}, gate=gate)
+
+    # K2 with M1b in its launch (``K2Build.m1b_qlen``): core, prefix and the
+    # MoE output bit-identical to M1b's launch then K2's, at DCP8 and DCP1
+    mw = _moe_weights(rank, device)
+    for S, q in ((8, 8), (16, 8), (16, 4), (64, 4)):
+        k = _k2_inputs(rank, device, S)
+        for ranks in (R, 1):
+            b = _mla_back_inputs(S, q, ranks, rank)
+            if ranks == 1:
+                b["lse"] = None
+            got = []
+            for fused in (False, True):
+                runner.step_begin()
+                core = torch.zeros(S, GROWS, dtype=bf, device=device)
+                prefix = k["prefix"].clone()
+                out = torch.empty(S, HIDDEN, dtype=bf, device=device)
+                if not fused:
+                    post(b, q, b["gate"], core, ranks=ranks)
+                f = (m1b_in(b, b["gate"]), q, ranks) if fused else None
+                _k2_launch(runner, dict(k, core=core), mw, prefix, out, False, m1b=f)
+                torch.accelerator.synchronize()
+                assert not runner.health.any() and not runner.flags.any(), (S, q)
+                got.append((core, prefix, out))
+            for x, y in zip(*got):
+                assert torch.equal(x, y), (S, q, ranks)
+
     # A graph of one step, two MLA layers of M1a -> M1b -> K2 (each layer its
-    # own tags, the peer regions reused), replayed bit-identical
+    # own tags, the peer regions reused), replayed bit-identical; then the
+    # same with M1b in K2's launch, equal to it
     S, q = 64, 4
     w = _mla_inputs(S, nb, rank, R)
     b = _mla_back_inputs(S, q, R, rank)
     k = _k2_inputs(rank, device, S)
-    mw = _moe_weights(rank, device)
     prefix, blocks = torch.empty_like(w["prefix"]), torch.empty_like(w["blocks"])
     cache = w["kv_cache"].clone()
     q8 = torch.zeros(S, R * NH, ENTRY, dtype=torch.uint8, device=device)
     gate = torch.zeros(S, GROWS, dtype=bf, device=device)
     core = torch.zeros(S, GROWS, dtype=bf, device=device)
     out = torch.empty(S, HIDDEN, dtype=bf, device=device)
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        runner.step_begin()
-        prefix.copy_(w["prefix"])
-        blocks.copy_(w["blocks"])
-        for layer in (3, 5):
-            pre(w, prefix, blocks, cache, q8, gate, layer)
-            post(b, q, gate, core, layer)
-            k2w = dict(k, core=core, blocks=blocks)
-            _k2_launch(runner, k2w, mw, prefix, out, False, layer=layer)
-    graph.replay()
-    torch.accelerator.synchronize()
-    want = [t.clone() for t in (prefix, q8, core, out)]
-    for _ in range(300):
+    wants = []
+    for fused in (False, True):
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            runner.step_begin()
+            prefix.copy_(w["prefix"])
+            blocks.copy_(w["blocks"])
+            for layer in (3, 5):
+                pre(w, prefix, blocks, cache, q8, gate, layer)
+                if not fused:
+                    post(b, q, gate, core, layer)
+                f = (m1b_in(b, gate), q, R) if fused else None
+                k2w = dict(k, core=core, blocks=blocks)
+                _k2_launch(runner, k2w, mw, prefix, out, False, layer=layer, m1b=f)
         graph.replay()
-    torch.accelerator.synchronize()
-    for got, ref in zip((prefix, q8, core, out), want):
-        assert torch.equal(got, ref)
-    assert not runner.health.any() and not runner.flags.any()
+        torch.accelerator.synchronize()
+        want = [t.clone() for t in (prefix, q8, core, out)]
+        for _ in range(300):
+            graph.replay()
+        torch.accelerator.synchronize()
+        for got, ref in zip((prefix, q8, core, out), want):
+            assert torch.equal(got, ref), fused
+        assert not runner.health.any() and not runner.flags.any()
+        wants.append(want)
+    for x, y in zip(*wants):
+        assert torch.equal(x, y)
 
 
 @needs_gfx950

@@ -7,7 +7,9 @@ AITER leaves every rank the partial attention of its KV shard for all the
 gathered heads (``o`` [S, ranks x 12, 512] bf16 and ``lse`` [S, ranks x 12]
 f32, strided views). As ``dcp_a2a_lse_reduce`` -> ``_v_up_proj`` -> the gate:
 
-    push (every CTA)    o / lse of rank p's heads -> rank p's CMB (an LSE of
+    push (a wave a (token, head), over every CTA)
+                        o / lse of rank p's heads -> rank p's CMB: the o row
+                        untagged, then the LSE pair as its flag (an LSE of
                         -inf for a row with no local KV or past the batch, as
                         ``_dcp_a2a_pack_send_kernel`` masks it)
     combine (a CTA a (head, 4 tokens))
@@ -19,6 +21,8 @@ f32, strided views). As ``dcp_a2a_lse_reduce`` -> ``_v_up_proj`` -> the gate:
 
 At DCP1 (``ranks`` 1) ``o`` [S, 12, 512] is already the attention's output, as
 vLLM hands it to ``_v_up_proj``: no push, no LSE; the combine stage loads it.
+
+K2 (``layer``, ``K2Build.m1b_qlen``) runs these stages in its own launch.
 """
 
 from dataclasses import dataclass
@@ -27,7 +31,7 @@ import flydsl.compiler as flyc
 import flydsl.expr as fx
 import torch
 from aiter.ops.flydsl.kernels import buffer_ops as bo
-from flydsl.expr import const_expr, gpu, range_constexpr
+from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr.typing import Int32, Int64, T
 
 from vllm.models.kimi_k3.amd.ops.mono.attention.kda import (
@@ -51,6 +55,7 @@ from vllm.models.kimi_k3.amd.ops.mono.common.debug import (
 )
 from vllm.models.kimi_k3.amd.ops.mono.common.mx import FP4, mfma_scaled, pow2
 from vllm.models.kimi_k3.amd.ops.mono.common.ops import (
+    CM_SYS,
     bf16_pair,
     bf_hi,
     bf_lo,
@@ -76,14 +81,14 @@ from vllm.models.kimi_k3.amd.ops.mono.common.sync import Mailbox, preg
 
 VD = 128  # v_head_dim
 CW = KVL // 2 + 2  # CMB pairs a (source, token, head): 256 o words, the LSE, pad
-OU = KVL // 4  # push units a (token, head): 2 o words each, then the LSE
+OU = KVL // 4  # the LSE's pair in a CMB row
 TT = 4  # tokens a combine task
 KS = KVL // 128  # W_UV's 128-k MFMA steps
 LROW = KVL // 2 + 4  # an LDS latent row (words, padded)
 # timeline points: start, push, combine, W_UV
 TL_POINTS = 4
 
-assert VD == WAVES * 16 and THREADS == TT * (KVL // 4)
+assert VD == WAVES * 16 and THREADS == TT * (KVL // 4) and KVL // 2 == 64 * 4
 
 _STREAM = fx.Stream(None)
 REGIONS = ("cmb",)
@@ -144,34 +149,35 @@ def cmb_pair(c, src, t, h):
 # ---------------------------------------------------------------- push
 @traced
 def stage_push(c):
-    """Rank p's heads of this rank's partials -> rank p's CMB: a thread a unit
-    (2 o words, or the masked LSE) a destination."""
-    s, q, tid, bid, a = c["S"], c["Q"], c["tid"], c["bid"], c["args"]
-    nu = s * NH * (OU + 1)
-    rounds = (nu + BLOCKS * THREADS - 1) // (BLOCKS * THREADS)
-    for i in range_constexpr(rounds):
-        g = bid * THREADS + tid + BLOCKS * THREADS * i
-        u = fx.min(g, nu - 1)
-        j = u % (OU + 1)
-        h = (u // (OU + 1)) % NH
-        t = u // (NH * (OU + 1))
-        # the request's local KV empty, or a row past the batch: LSE -inf
-        rows = ld_i32(a["qsl"], s // q)
-        empty = (ld_i32(a["seq_lens"], t // q) == 0) | (t >= rows)
-        for p in range_constexpr(c["R"]):
-            gh = p * NH + h
+    """Rank p's heads of this rank's partials -> rank p's CMB: a wave a (token,
+    head), the waves over every CTA first. The o row goes untagged (a lane 16 B
+    a destination, half the bytes of tagged pairs: the push is xGMI-bound), then
+    once the wave's stores drained, the LSE pair, its tag the row's flag."""
+    s, q, bid, a = c["S"], c["Q"], c["bid"], c["args"]
+    lane, wave = c["lane"], c["wave"]
+    nr = s * NH
+    nw = BLOCKS * WAVES
+    for i in range_constexpr((nr + nw - 1) // nw):
+        g = (wave + WAVES * i) * BLOCKS + bid
+        if g < nr:
+            h = g % NH
+            t = g // NH
+            # the request's local KV empty, or a row past the batch: LSE -inf
+            rows = ld_i32(a["qsl"], s // q)
+            empty = (ld_i32(a["seq_lens"], t // q) == 0) | (t >= rows)
             at = cmb_pair(c, c["rank"], t, h)
-            if (g < nu) & (j < OU):
-                w = fx.Vector(
-                    bo.buffer_load(
-                        rsrc(a["o"]),
-                        (t * a["o_sb"] + gh * a["o_sh"]) // 2 + 2 * j,
-                        vec_width=2,
-                        dtype=T.i32,
-                    )
+            lses = []
+            for p in range_constexpr(c["R"]):
+                gh = p * NH + h
+                w = bo.buffer_load(
+                    rsrc(a["o"]),
+                    (t * a["o_sb"] + gh * a["o_sh"]) // 2 + 4 * lane,
+                    vec_width=4,
+                    dtype=T.i32,
                 )
-                c["put_words"](c["cmb"][p], at + 2 * j, [w[0], w[1]])
-            if (g < nu) & (j == OU):
+                bo.buffer_store(
+                    w, rsrc(c["cmb"][p].value), at * 2 + 4 * lane, cache_modifier=CM_SYS
+                )
                 lse = fx.Int32(
                     bo.buffer_load(
                         rsrc(a["lse"]),
@@ -180,8 +186,13 @@ def stage_push(c):
                         dtype=T.i32,
                     )
                 )
-                lse = empty.select(fx.Int32(-8388608), lse)  # -inf
-                c["put_words"](c["cmb"][p], at + 2 * OU, [lse, fx.Int32(0)])
+                lses.append(empty.select(fx.Int32(-8388608), lse))  # -inf
+            # the wave's row stores acknowledged before its flags (a wave's
+            # own stores: no barrier)
+            rocdl.s_waitcnt(vmcnt=0)
+            for p in range_constexpr(c["R"]):
+                if lane == p:
+                    c["put_words"](c["cmb"][p], at + 2 * OU, [lses[p], fx.Int32(0)])
 
 
 # ---------------------------------------------------------------- combine
@@ -222,12 +233,22 @@ def stage_combine(c, h, t0):
 def combine_ranks(c, h, t0, tt, cc, t):
     """``stage_combine`` at DCP8: the ranks' CMB partials, LSE-weighted."""
     s, R = c["S"], c["R"]
-    specs = []
-    for src in range_constexpr(R):
-        at = cmb_pair(c, src, t, h)
-        specs += [(c["cmb_own"], at + 2 * OU, 1), (c["cmb_own"], at + 2 * cc, 2)]
+    specs = [(c["cmb_own"], cmb_pair(c, src, t, h) + 2 * OU, 1) for src in range(R)]
     got = c["poll"](specs)
-    lse = [sane(got[2 * r][0].bitcast(fx.Float32)) for r in range(R)]
+    lse = [sane(got[r][0].bitcast(fx.Float32)) for r in range(R)]
+    # each source's row, untagged: its LSE flag above announced it
+    rows = [
+        fx.Vector(
+            bo.buffer_load(
+                rsrc(c["cmb_own"].value),
+                cmb_pair(c, src, t, h) * 2 + 2 * cc,
+                vec_width=2,
+                dtype=T.i32,
+                cache_modifier=CM_SYS,
+            )
+        )
+        for src in range(R)
+    ]
     m = lse[0]
     for r in range_constexpr(1, R):
         m = fx.max(m, lse[r])
@@ -240,7 +261,7 @@ def combine_ranks(c, h, t0, tt, cc, t):
     acc = [fx.Float32(0.0)] * 4
     for r in range_constexpr(R):
         wt = (e[r] == fx.Float32(0.0)).select(fx.Float32(0.0), e[r] * inv)
-        o = got[2 * r + 1]
+        o = rows[r]
         pv = [bf_lo(o[0]), bf_hi(o[0]), bf_lo(o[1]), bf_hi(o[1])]
         for j in range_constexpr(4):
             pj = (wt == fx.Float32(0.0)).select(fx.Float32(0.0), pv[j])
@@ -315,26 +336,36 @@ def stage_uv(c, h, t0, ops):
     g = [bf_lo(gw[0]), bf_hi(gw[0]), bf_lo(gw[1]), bf_hi(gw[1])]
     out = [bf16r(acc[j]) * g[j] for j in range(4)]
     if (tl < TT) & (t < s):
+        # fused into K2 (``c["core_cm"]``): read by other CTAs, device scope
         bo.buffer_store(
             fx.Vector.from_elements(
                 [bf16_pair(out[0], out[1]), bf16_pair(out[2], out[3])], fx.Float32
             ),
             rsrc(a["core"]),
             (t * GROWS + col) // 2,
+            **({"cache_modifier": c["core_cm"]} if "core_cm" in c else {}),
         )
     gpu.barrier()
 
 
+def tasks(s: int) -> int:
+    """Combine tasks: a (head, 4 tokens), head-minor (task h + 12 tile)."""
+    return NH * ((s + TT - 1) // TT)
+
+
 @traced
-def combine_tasks(c):
+def combine_tasks(c, ctas=BLOCKS, done=None):
+    """The combine + W_UV tasks over CTAs 0 .. ``ctas``; ``done(task)`` after
+    each task's ``core`` rows are stored (K2's fused M1b: their flag)."""
     s, bid = c["S"], c["bid"]
-    tiles = (s + TT - 1) // TT
-    for task in range(first_task(bid, 0), NH * tiles, BLOCKS):
+    for task in range(first_task(bid, 0), tasks(s), ctas):
         h = task % NH
         t0 = task // NH * TT
         ops = wv_loads(c, h)
         stage_combine(c, h, t0)
         stage_uv(c, h, t0, ops)
+        if const_expr(done is not None):
+            done(task)
 
 
 # ---------------------------------------------------------------- kernel
@@ -494,6 +525,34 @@ def build(key: MlaPostBuild):
     return launch
 
 
+def host_args(ranks, o, lse, seq_lens, qsl, w_v, w_v_scale, gate) -> list:
+    """ABI's ``o`` .. ``gate`` (``mla_post``'s, or K2's fused M1b's)."""
+    assert o.stride(-1) == 1 and w_v.stride(-1) == 1
+    assert o.dtype == torch.bfloat16
+    assert (lse is None) == (ranks == 1)
+    assert lse is None or lse.dtype == torch.float32
+    assert seq_lens.dtype == torch.int32 and qsl.dtype == torch.int32
+    assert gate.is_contiguous()
+    return [
+        o.data_ptr(),
+        o.stride(0),
+        o.stride(1),
+        0 if lse is None else lse.data_ptr(),
+        0 if lse is None else lse.stride(0),
+        0 if lse is None else lse.stride(1),
+        seq_lens.data_ptr(),
+        qsl.data_ptr(),
+        w_v.data_ptr(),
+        w_v.stride(0),
+        w_v.stride(1),
+        w_v_scale.data_ptr(),
+        w_v_scale.stride(0),
+        w_v_scale.stride(1),
+        w_v_scale.stride(2),
+        gate.data_ptr(),
+    ]
+
+
 def mla_post(
     key: MlaPostBuild,
     *,
@@ -521,30 +580,10 @@ def mla_post(
     128, 256) u8 MXFP4 and ``w_v_scale`` (12, 128, 16) e8m0, any strides but
     W_V's last; ``gate`` / ``core`` [S, 1536] bf16, dense."""
     del scratch
-    assert o.stride(-1) == 1 and w_v.stride(-1) == 1
-    assert o.dtype == torch.bfloat16
-    assert (lse is None) == (key.ranks == 1)
-    assert lse is None or lse.dtype == torch.float32
-    assert seq_lens.dtype == torch.int32 and qsl.dtype == torch.int32
-    assert gate.is_contiguous() and core.is_contiguous()
+    assert core.is_contiguous()
     f = build(key)
     f(
-        o.data_ptr(),
-        o.stride(0),
-        o.stride(1),
-        0 if lse is None else lse.data_ptr(),
-        0 if lse is None else lse.stride(0),
-        0 if lse is None else lse.stride(1),
-        seq_lens.data_ptr(),
-        qsl.data_ptr(),
-        w_v.data_ptr(),
-        w_v.stride(0),
-        w_v.stride(1),
-        w_v_scale.data_ptr(),
-        w_v_scale.stride(0),
-        w_v_scale.stride(1),
-        w_v_scale.stride(2),
-        gate.data_ptr(),
+        *host_args(key.ranks, o, lse, seq_lens, qsl, w_v, w_v_scale, gate),
         core.data_ptr(),
         0 if peers is None else peers.data_ptr(),
         rank,

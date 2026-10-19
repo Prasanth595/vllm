@@ -16,6 +16,11 @@ shared gate/up GEMVs issue their weights before they first wait.
     CTAs 160 .. 243  router parts (28) and latent parts (56): weights first
     every CTA        ug; down (0 .. 223) or the shared down (224 .. 255);
                      lnorm (56 .. 83), up (0 .. 55), reduce (200 .. 255)
+
+An MLA layer's K2 runs its M1b (``mla_back``) first, in the same launch: every
+CTA pushes, CTAs 0 .. 55 combine and write ``core`` (a flag a head and 4
+tokens), and the o_proj CTAs, their weights in flight, poll the flags of a core
+tile before they load it. That removes the M1b -> K2 launch boundary.
 """
 
 from dataclasses import dataclass
@@ -23,10 +28,11 @@ from dataclasses import dataclass
 import flydsl.compiler as flyc
 import flydsl.expr as fx
 import torch
-from flydsl.expr import const_expr, range_constexpr
+from flydsl.expr import const_expr, gpu, range_constexpr
 from flydsl.expr.typing import Int32, Int64
 
 from vllm.models.kimi_k3.amd.ops.mono.attention import back as k2a
+from vllm.models.kimi_k3.amd.ops.mono.attention import mla_back as m1b
 from vllm.models.kimi_k3.amd.ops.mono.attention.kda import (
     _SOURCES,
     COLS,
@@ -46,6 +52,7 @@ from vllm.models.kimi_k3.amd.ops.mono.common.debug import (
     stamp_flush,
 )
 from vllm.models.kimi_k3.amd.ops.mono.common.ops import (
+    CM_DEV,
     ld_i32,
     load_ptr64,
     traced,
@@ -63,6 +70,7 @@ from vllm.models.kimi_k3.amd.ops.mono.common.ranks import peer_bases
 from vllm.models.kimi_k3.amd.ops.mono.common.sync import (
     Mailbox,
     preg,
+    publish,
     shift,
     sreg,
     stall,
@@ -80,11 +88,12 @@ SD0 = k2b.DOWN_TASKS  # 224: the shared down's CTAs
 # timeline points: 0 start, 1 o_proj done / AR reduced, 2 early done / slice,
 # 3 ug, 4 down/sdown, 5 lnorm, 6 up, 7 reduce, 8 gate, 9 mix (x published),
 # 10 route, 11 route table, 12 latent quant, 13 the shared SiTU's h done
-TL_POINTS = 17  # + 14 (unused), 15 INTER loaded, 16 down done
+TL_POINTS = 18  # + 14 the fused M1b's push, 15 INTER loaded, 16 down done,
+# 17 the fused M1b's combine
 
 assert E0 + k2b.R_TASKS + k2b.L_TASKS <= BLOCKS and k2b.G_TASKS <= E0 - O0
 
-REGIONS = ("part", "wgt", "msq", "xrdy", "ar") + k2b.REGIONS
+REGIONS = ("part", "wgt", "msq", "xrdy", "ar", "crdy", "cmb") + k2b.REGIONS
 
 _STREAM = fx.Stream(None)
 
@@ -105,11 +114,34 @@ class K2Build:
     fault_layer: int = 0
     fault_ticks: int = 0
     timeline: bool = False
+    # an MLA layer's M1b in this launch (``mla_back``) when m1b_qlen > 0: its
+    # tokens a request, its ranks and its CMB's peer byte offset. CTAs 0 .. 55
+    # combine (and push, at ranks 8) before their AttnRes work; the o_proj
+    # CTAs poll a flag a (head, 4 tokens) before they load the core tile.
+    m1b_qlen: int = 0
+    m1b_ranks: int = 1
+    m1b_off: int = 0
 
 
 ABI = KernelAbi(
     (
         "core",
+        "o",
+        "o_sb",
+        "o_sh",
+        "lse",
+        "lse_sb",
+        "lse_sh",
+        "seq_lens",
+        "qsl",
+        "w_v",
+        "wv_sh",
+        "wv_sn",
+        "w_vs",
+        "vs_sh",
+        "vs_sn",
+        "vs_sk",
+        "gate",
         "w_o",
         "prefix",
         "blocks",
@@ -163,6 +195,9 @@ def scratch_layout(key: K2Build) -> dict:
         lay[name] = ((end + 15) // 16 * 16 + o, n)
     end = max(o + n for o, n in lay.values())
     lay["xrow"] = ((end + 15) // 16 * 16, s * HIDDEN * 2)
+    end = max(o + n for o, n in lay.values())
+    # the fused M1b's flags, a combine task each
+    lay["crdy"] = ((end + 15) // 16 * 16, m1b.tasks(s) * 8)
     return lay
 
 
@@ -186,7 +221,18 @@ def stage_oproj(c, gi):
     of 16 rows at a time."""
     ops = [k2a.o_loads(c, fx.min(gi + O_N * j, OTASKS - 1)) for j in range(O_ROUNDS)]
     for t0, n in gemv.token_tiles(c["S"]):
-        k2a.load_core(c, t0, n)
+        cm = 0
+        if const_expr(c["m1b"]):
+            # the fused M1b's tasks of these rows (a head, 4 tokens), a thread a
+            # flag
+            f0 = t0 // m1b.TT * m1b.NH
+            nf = ((t0 + n + m1b.TT - 1) // m1b.TT) * m1b.NH - f0
+            tid = c["tid"]
+            if tid < nf:
+                c["poll"]([(c["crdy"], f0 + tid, 1)])
+            gpu.barrier()
+            cm = CM_DEV
+        k2a.load_core(c, t0, n, cm)
         for j in range_constexpr(O_ROUNDS):
             t = gi + O_N * j
             if t < OTASKS:
@@ -201,6 +247,8 @@ def build(key: K2Build):
         return _BUILDS[key]
     s, ns = key.tokens, key.nblocks + 1
     assert 1 <= s <= k2b.MAX_S
+    fused = key.m1b_qlen > 0
+    assert not fused or (s % key.m1b_qlen == 0 and key.m1b_ranks in (1, TP_))
     # the AttnRes stages' delta tile beside their slices
     vextra = s * COLS * 4
     lay = scratch_layout(key)
@@ -264,12 +312,17 @@ def build(key: K2Build):
         intsc: fx.Array[fx.Int32, nq * k2b.UG_GROUPS, 16]
         contrib: fx.Array[fx.Float32, s * k2b.TOPK * k2b.ROWS, 16]
 
+    @fx.struct
+    class M1bLds:
+        lat: fx.Array[fx.Int32, m1b.TT * m1b.LROW if fused else 1, 16]
+
     @fx.union
     class StageLds:
         early: EarlyLds
         attn: AttnLds
         ug: UgLds
         down: DownLds
+        m1b: M1bLds
 
     @fx.struct
     class Smem:
@@ -280,6 +333,8 @@ def build(key: K2Build):
         f"k3_mono_k2_s{s}_nb{key.nblocks}_x{int(key.reset)}_r{int(key.reduce)}"
         f"_t{int(key.timeline)}"
     )
+    if fused:
+        name += f"_m{key.m1b_qlen}_{key.m1b_ranks}"
     if key.fault_rank >= 0:
         name += (
             f"_f{key.fault_rank}_{key.fault_epoch}_{key.fault_layer}_{key.fault_ticks}"
@@ -288,6 +343,22 @@ def build(key: K2Build):
     @flyc.kernel(name=name, known_block_size=[THREADS, 1, 1])
     def k2(
         core: Int64,
+        o: Int64,
+        o_sb: Int32,
+        o_sh: Int32,
+        lse: Int64,
+        lse_sb: Int32,
+        lse_sh: Int32,
+        seq_lens: Int64,
+        qsl: Int64,
+        w_v: Int64,
+        wv_sh: Int32,
+        wv_sn: Int32,
+        w_vs: Int64,
+        vs_sh: Int32,
+        vs_sn: Int32,
+        vs_sk: Int32,
+        gate: Int64,
         w_o: Int64,
         prefix: Int64,
         blocks: Int64,
@@ -397,6 +468,7 @@ def build(key: K2Build):
             "tls": lds.tls.ptr,
             "ln": scratch + fx.Int64(lay["ln"][0]),
             "shp": scratch + fx.Int64(lay["shp"][0]),
+            "m1b": fused,
             "args": {
                 "core": core,
                 "w_o": w_o,
@@ -440,6 +512,44 @@ def build(key: K2Build):
             c[region] = sreg(scratch, lay[region][0], region)
         on, tls = key.timeline, lds.tls.ptr
         stamp_begin(on, tls, tid, TL_POINTS)
+        # ---- the fused M1b: core's rows, a flag a combine task
+        if const_expr(fused):
+            R = key.m1b_ranks
+            c["crdy"] = sreg(scratch, lay["crdy"][0], "crdy")
+            c.update(
+                Q=key.m1b_qlen,
+                R=R,
+                lat=st.m1b.peek().lat.ptr,
+                core_cm=CM_DEV,
+                cmb=[preg(b, key.m1b_off, "cmb") for b in bases] if R > 1 else [],
+                cmb_own=preg(own, key.m1b_off, "cmb"),
+            )
+            c["args"].update(
+                o=o,
+                o_sb=o_sb,
+                o_sh=o_sh,
+                lse=lse,
+                lse_sb=lse_sb,
+                lse_sh=lse_sh,
+                seq_lens=seq_lens,
+                qsl=qsl,
+                w_v=w_v,
+                wv_sh=wv_sh,
+                wv_sn=wv_sn,
+                w_vs=w_vs,
+                vs_sh=vs_sh,
+                vs_sn=vs_sn,
+                vs_sk=vs_sk,
+                gate=gate,
+            )
+            if const_expr(R > 1):
+                m1b.stage_push(c)
+            stamp(on, tls, tid, 14)
+            if bid < NA:
+                m1b.combine_tasks(
+                    c, NA, lambda task: publish(c["put"], c["crdy"], task, 1, tid == 0)
+                )
+            stamp(on, tls, tid, 17)
         # ---- o_proj on every CTA past AttnRes's
         eb = bid - E0
         lb = eb - k2b.R_TASKS
@@ -533,6 +643,22 @@ def build(key: K2Build):
     @flyc.jit
     def launch(
         core: Int64,
+        o: Int64,
+        o_sb: Int32,
+        o_sh: Int32,
+        lse: Int64,
+        lse_sb: Int32,
+        lse_sh: Int32,
+        seq_lens: Int64,
+        qsl: Int64,
+        w_v: Int64,
+        wv_sh: Int32,
+        wv_sn: Int32,
+        w_vs: Int64,
+        vs_sh: Int32,
+        vs_sn: Int32,
+        vs_sk: Int32,
+        gate: Int64,
         w_o: Int64,
         prefix: Int64,
         blocks: Int64,
@@ -566,6 +692,22 @@ def build(key: K2Build):
         _ = keyed
         k2(
             core,
+            o,
+            o_sb,
+            o_sh,
+            lse,
+            lse_sb,
+            lse_sh,
+            seq_lens,
+            qsl,
+            w_v,
+            wv_sh,
+            wv_sn,
+            w_vs,
+            vs_sh,
+            vs_sn,
+            vs_sk,
+            gate,
             w_o,
             prefix,
             blocks,
@@ -638,12 +780,17 @@ def k2_launch(
     health,
     alarm,
     tl=None,
+    m1b_in=None,
 ):
     """Host launcher: ``core`` [S, 1536] (o_proj's input), ``prefix`` updated in
-    place, ``out`` the MoE output [S, 7168]; MoE weights as ``moe``."""
+    place, ``out`` the MoE output [S, 7168]; MoE weights as ``moe``. With
+    ``key.m1b_qlen``, ``m1b_in`` is ``mla_back.mla_post``'s (o, lse, seq_lens,
+    qsl, w_v, w_v_scale, gate) and this launch writes ``core`` first."""
+    assert (m1b_in is not None) == (key.m1b_qlen > 0)
     f = build(key)
     f(
         core.data_ptr(),
+        *(m1b.host_args(key.m1b_ranks, **m1b_in) if m1b_in is not None else [0] * 16),
         w_o.data_ptr(),
         prefix.data_ptr(),
         blocks.data_ptr(),

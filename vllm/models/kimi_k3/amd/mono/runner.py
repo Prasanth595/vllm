@@ -73,6 +73,7 @@ class MonoRunner:
         self.alarm = int(self.peers.addresses[0].item()) + 4 * self.rank
         self.flags = self.peers.bytes[: 4 * tp.world_size].view(torch.int32)
         self.fault: dict = {}  # K2Build's fault_* fields (tests only)
+        self.fuse_m1b = True  # an MLA layer's M1b runs in its K2's launch
         self.first_layer = -1  # the step's first kernel layer: bumps the epoch
         self.kda_prefix = ""  # a KDA layer's name: the step's metadata
         self.mla_prefix = ""  # an MLA layer's name: its decode metadata

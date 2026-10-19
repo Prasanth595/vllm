@@ -42,6 +42,7 @@ from aiter.ops.flydsl.kernels import buffer_ops as bo
 from flydsl.expr import const_expr, gpu, range_constexpr, rocdl
 from flydsl.expr.typing import T, as_ir_value
 
+from vllm.models.kimi_k3.amd.ops.mono.attention.back import peer_at, two_shot
 from vllm.models.kimi_k3.amd.ops.mono.common.mx import (
     FP4,
     UNIT_SCALE,
@@ -52,6 +53,8 @@ from vllm.models.kimi_k3.amd.ops.mono.common.mx import (
 from vllm.models.kimi_k3.amd.ops.mono.common.ops import (
     CM_DEV,
     ballot,
+    bf2_f32,
+    bf16_pair,
     bf16_round,
     bf_hi,
     bf_lo,
@@ -62,10 +65,12 @@ from vllm.models.kimi_k3.amd.ops.mono.common.ops import (
     hw_rsq,
     lanes_below,
     popcount,
+    readlane,
     row_sum,
     rsrc,
     traced,
     uniform,
+    unlikely,
     wave_sum,
 )
 from vllm.models.kimi_k3.amd.ops.mono.common.plan import (
@@ -86,11 +91,11 @@ REGIONS = (
     "route",
     "inter",
     "isc",
-    "lmsq",
     "lnrdy",
     "shrdy",
     "rlog",
     "lat",
+    "latq4",
     "latr",
     "final",
 )
@@ -179,6 +184,7 @@ def peer_pairs(s):
     return {
         "rlog": TP * s * (E // TP),
         "lat": s * LAT // 2,
+        "latq4": s * LAT // 8 + s * LAT // 32,  # ``few_rows``: fp4 words, codes
         "latr": TP * s * LAT // 2,
         "final": TP * s * HIDDEN // 2,
     }
@@ -193,8 +199,7 @@ def scratch_layout(s: int) -> dict:
         "route": s * 2 * TOPK,
         "inter": s * TOPK * 48,
         "isc": s * TOPK * UG_GROUPS,
-        "lmsq": LN_TASKS * s,
-        "lnrdy": LN_TASKS,
+        "lnrdy": s,
         "shrdy": UP_TASKS,
     }
     lay = pair_layout(pairs.items())
@@ -282,7 +287,9 @@ def early_out(c, kind, i, q, red, t0, n):
     part 0 adds them in part order and publishes the rows (router: fp32 to every
     rank's RLOG, latent: bf16 to every rank's LAT); sgu bf16 to SGU."""
     s, tid = c["S"], c["tid"]
-    if const_expr(kind == 2):
+    if const_expr((kind == 1) and few_rows(s)):
+        latent_mx_out(c, i, q, red, t0, n)
+    elif const_expr(kind == 2):
         if tid < (ROWS // 2) * n:
             rp = tid % (ROWS // 2)
             tl = tid // (ROWS // 2)
@@ -327,6 +334,61 @@ def early_out(c, kind, i, q, red, t0, n):
                 col = c["rank"] * (LAT // TP) + i * ROWS + 2 * rp
                 for p in range_constexpr(TP):
                     c["put_bf"](c["peer"]["lat"][p], t * LAT + col, [v0, v1])
+    gpu.barrier()
+
+
+@traced
+def latent_mx_out(c, i, q, red, t0, n):
+    """``early_out`` of the latent at ``few_rows``: an even group's part 0 ends
+    the MXFP4 block of its rows and the odd group's (32 rows): the 4 partials in
+    part order, bf16, then aiter's inline quant as ``load_latq`` -> every rank's
+    LATQ4 (fp4 words, then a code a word). The other tasks publish partials."""
+    s, tid = c["S"], c["tid"]
+    region = c["lpart"]
+    at = lambda ii, qq, t, r: ((ii * L_PARTS + qq) * s + t) * ROWS + r  # noqa: E731
+    fin = (i % 2 == 0) & (q == 0)
+    if (~fin) & (tid < ROWS * n):
+        c["put"](
+            region,
+            at(i, q, t0 + tid // ROWS, tid % ROWS),
+            row_sum(red, tid % ROWS, tid // ROWS),
+        )
+    if fin & (tid < 2 * ROWS * n):
+        tl = tid // (2 * ROWS)
+        r = tid % ROWS
+        odd = tid % (2 * ROWS) >= ROWS
+        t = t0 + tl
+        a0 = odd.select(at(i + 1, 0, t, r), at(i, 1, t, r))
+        a1 = odd.select(at(i + 1, 1, t, r), at(i, 1, t, r))
+        got = c["poll"]([(region, a0, 1), (region, a1, 1)])
+        p0, p1 = f32_of(got[0][0]), f32_of(got[1][0])
+        v = odd.select(p0 + p1, row_sum(red, r, tl) + p0)
+        fx.ptr_store(bf16_round(v), c["av"] + tid)
+    gpu.barrier()
+    if fin & (tid < 4 * n):
+        tl = tid // 4
+        qd = tid % 4
+        t = t0 + tl
+        vs = [fx.ptr_load(c["av"] + (tl * 2 * ROWS + k)) for k in range(2 * ROWS)]
+        am = fx.Int32(0)
+        for v in vs:
+            am = fx.max(am, (v.bitcast(fx.Int32) >> 16) & 0x7FFF)
+        code = e8m0_roundup((am << 16).bitcast(fx.Float32))
+        scale = (code << 23).bitcast(fx.Float32)
+        pk = fx.Int32(0)
+        for j in range_constexpr(4):
+            w = bf16_pair(
+                fx.ptr_load(c["av"] + (tl * 2 * ROWS + 8 * qd + 2 * j)),
+                fx.ptr_load(c["av"] + (tl * 2 * ROWS + 8 * qd + 2 * j + 1)),
+            )
+            pk = pk_fp4_bf16(pk, w.bitcast(fx.Int32), scale, j)
+        kb = c["rank"] * (LAT // TP // 32) + i // 2
+        for p in range_constexpr(TP):
+            c["put_words"](c["peer"]["latq4"][p], t * (LAT // 8) + kb * 4 + qd, [pk])
+            if qd == 0:
+                c["put_words"](
+                    c["peer"]["latq4"][p], s * LAT // 8 + t * (LAT // 32) + kb, [code]
+                )
     gpu.barrier()
 
 
@@ -412,17 +474,39 @@ def _okey(v):
 
 
 @traced
+def _route_out(c, t, red, sel, rank, me, ms):
+    """The picks' sigmoids in rank order (red[192 ..]), summed serially (aiter's
+    renorm, IEEE 1 / sum) -> ROUTE (expert, weight) at the pick's rank."""
+    if sel:
+        fx.ptr_store(ms, red + (192 + rank))
+    total = fx.Float32(0.0)
+    for j in range_constexpr(TOPK):
+        total = total + fx.ptr_load(red + (192 + j))
+    inv = fx.Float32(1.0) / total
+    if sel:
+        c["put"](
+            c["route"], t * 2 * TOPK + rank, fx.min(fx.max(me, 0), fx.Int32(E - 1))
+        )
+        c["put"](c["route"], t * 2 * TOPK + TOPK + rank, ms * inv)
+
+
+@traced
 def stage_route(c, t):
     """Token t (wave 0): 896 logits, 14 a lane (expert lane + 64 i) -> sigmoid
-    (v_rcp) + bias -> the top-16 by a radix select (the 16th largest key by a
-    32-step bit search of ballot counts; equal keys: the lower experts) -> the
-    16 ranked by score, descending (aiter's slot order) -> the pre-bias
-    sigmoids renormalized in that order (IEEE 1 / sum)."""
+    (v_rcp) + bias -> the top-16 by (key desc, lower expert first) -> the
+    pre-bias sigmoids renormalized in that order (IEEE 1 / sum). The top-16 is
+    found from a lower bound, the 16th largest lane max (16 lanes hold a key >=
+    it: so does the 16th largest key), by one ballot a bit; the keys >= it (the
+    candidates, ~20-30) are compacted in expert order and each ranked against
+    the others (readlane), its rank the pick's slot. More than 64 candidates
+    (a warmup's NaN row): the full radix select over all 14 keys a lane."""
     lane, wave, red = c["lane"], c["wave"], c["red"]
     a = c["args"]
     if wave == 0:
         s = c["S"]
         per = E // 64
+        # the bias loads in flight across the poll
+        bias = [bo_ld_f32(a["bias"], lane + 64 * i) for i in range(per)]
         specs = []
         for i in range_constexpr(per):
             e = lane + 64 * i
@@ -433,10 +517,9 @@ def stage_route(c, t):
         got = c["poll"](specs)
         keys, sigs = [], []
         for i in range_constexpr(per):
-            e = lane + 64 * i
             lg = f32_of(got[i][0])
             sg = hw_rcp(fx.Float32(1.0) + hw_exp2(lg * fx.Float32(-LOG2E)))
-            sc = sg + bo_ld_f32(a["bias"], e)
+            sc = sg + bias[i]
             # a NaN logit (a warmup's garbage row) ranks last
             keys.append(_okey((sc == sc).select(sc, fx.Float32(-3.0e38))))
             sigs.append((sg == sg).select(sg, fx.Float32(0.0)))
@@ -447,54 +530,80 @@ def stage_route(c, t):
                 n = n + popcount(ballot(keys[i] >= th))
             return n
 
-        th = fx.Uint32(0)
+        lm = keys[0]
+        for i in range_constexpr(1, per):
+            lm = (keys[i] > lm).select(keys[i], lm)
+        t0 = fx.Uint32(0)
         for bit in range_constexpr(31, -1, -1):
-            cand = th | fx.Uint32(1 << bit)
-            th = (count_ge(cand) >= TOPK).select(cand, th)
-        # selected: key > th, then the lowest experts with key == th
-        n_gt = fx.Int32(0)
-        for i in range_constexpr(per):
-            n_gt = n_gt + popcount(ballot(keys[i] > th))
-        need = fx.Int32(TOPK) - n_gt
-        eq_before = fx.Int32(0)
-        sel_before = fx.Int32(0)
-        for i in range_constexpr(per):
-            eqb = ballot(keys[i] == th)
-            eq_rank = eq_before + lanes_below(eqb, lane)
-            sel = (keys[i] > th) | ((keys[i] == th) & (eq_rank < need))
-            selb = ballot(sel)
-            pos = sel_before + lanes_below(selb, lane)
-            if sel:
-                fx.ptr_store(keys[i].bitcast(fx.Float32), red + pos * 3)
-                fx.ptr_store(
-                    fx.Int32(lane + 64 * i).bitcast(fx.Float32), red + (pos * 3 + 1)
-                )
-                fx.ptr_store(sigs[i], red + (pos * 3 + 2))
-            eq_before = eq_before + popcount(eqb)
-            sel_before = sel_before + popcount(selb)
-        # rank the 16 by key descending, the lower expert first on a tie
-        q = fx.min(lane, TOPK - 1)
-        mk = fx.Uint32(fx.ptr_load(red + q * 3).bitcast(fx.Int32))
-        me = fx.ptr_load(red + (q * 3 + 1)).bitcast(fx.Int32)
-        ms = fx.ptr_load(red + (q * 3 + 2))
-        rank = fx.Int32(0)
-        for j in range_constexpr(TOPK):
-            ok = fx.Uint32(fx.ptr_load(red + j * 3).bitcast(fx.Int32))
-            oe = fx.ptr_load(red + (j * 3 + 1)).bitcast(fx.Int32)
-            before = (ok > mk) | ((ok == mk) & (oe < me))
-            rank = rank + before.select(fx.Int32(1), fx.Int32(0))
-        # the sigmoids in rank order, summed serially (aiter's renorm)
-        if lane < TOPK:
-            fx.ptr_store(ms, red + (64 + rank))
-        total = fx.Float32(0.0)
-        for j in range_constexpr(TOPK):
-            total = total + fx.ptr_load(red + (64 + j))
-        inv = fx.Float32(1.0) / total
-        if lane < TOPK:
-            c["put"](
-                c["route"], t * 2 * TOPK + rank, fx.min(fx.max(me, 0), fx.Int32(E - 1))
-            )
-            c["put"](c["route"], t * 2 * TOPK + TOPK + rank, ms * inv)
+            cand = t0 | fx.Uint32(1 << bit)
+            t0 = (popcount(ballot(lm >= cand)) >= TOPK).select(cand, t0)
+        n_c = count_ge(t0)
+        if unlikely(n_c > 64):
+            # the 16th largest key by a 32-step bit search; selected: key > th,
+            # then the lowest experts with key == th
+            th = fx.Uint32(0)
+            for bit in range_constexpr(31, -1, -1):
+                cand = th | fx.Uint32(1 << bit)
+                th = (count_ge(cand) >= TOPK).select(cand, th)
+            n_gt = fx.Int32(0)
+            for i in range_constexpr(per):
+                n_gt = n_gt + popcount(ballot(keys[i] > th))
+            need = fx.Int32(TOPK) - n_gt
+            eq_before = fx.Int32(0)
+            sel_before = fx.Int32(0)
+            for i in range_constexpr(per):
+                eqb = ballot(keys[i] == th)
+                eq_rank = eq_before + lanes_below(eqb, lane)
+                sel = (keys[i] > th) | ((keys[i] == th) & (eq_rank < need))
+                selb = ballot(sel)
+                pos = sel_before + lanes_below(selb, lane)
+                if sel:
+                    fx.ptr_store(keys[i].bitcast(fx.Float32), red + pos * 3)
+                    fx.ptr_store(
+                        fx.Int32(lane + 64 * i).bitcast(fx.Float32),
+                        red + (pos * 3 + 1),
+                    )
+                    fx.ptr_store(sigs[i], red + (pos * 3 + 2))
+                eq_before = eq_before + popcount(eqb)
+                sel_before = sel_before + popcount(selb)
+            # rank the 16 by key descending, the lower expert first on a tie
+            q = fx.min(lane, TOPK - 1)
+            mk = fx.Uint32(fx.ptr_load(red + q * 3).bitcast(fx.Int32))
+            me = fx.ptr_load(red + (q * 3 + 1)).bitcast(fx.Int32)
+            ms = fx.ptr_load(red + (q * 3 + 2))
+            rank = fx.Int32(0)
+            for j in range_constexpr(TOPK):
+                ok = fx.Uint32(fx.ptr_load(red + j * 3).bitcast(fx.Int32))
+                oe = fx.ptr_load(red + (j * 3 + 1)).bitcast(fx.Int32)
+                before = (ok > mk) | ((ok == mk) & (oe < me))
+                rank = rank + before.select(fx.Int32(1), fx.Int32(0))
+            _route_out(c, t, red, lane < TOPK, rank, me, ms)
+        else:
+            # the candidates -> red (keys, experts, sigmoids), in expert order
+            cbefore = fx.Int32(0)
+            for i in range_constexpr(per):
+                cb = ballot(keys[i] >= t0)
+                pos = cbefore + lanes_below(cb, lane)
+                if keys[i] >= t0:
+                    fx.ptr_store(keys[i].bitcast(fx.Float32), red + pos)
+                    fx.ptr_store(
+                        fx.Int32(lane + 64 * i).bitcast(fx.Float32), red + (64 + pos)
+                    )
+                    fx.ptr_store(sigs[i], red + (128 + pos))
+                cbefore = cbefore + popcount(cb)
+            # lane j: candidate j, its rank = the candidates before it
+            q = fx.min(lane, n_c - 1)
+            mki = fx.ptr_load(red + q).bitcast(fx.Int32)
+            mk = fx.Uint32(mki)
+            me = fx.ptr_load(red + (64 + q)).bitcast(fx.Int32)
+            ms = fx.ptr_load(red + (128 + q))
+            rank = fx.Int32(0)
+            for j in range_constexpr(64):
+                ok = fx.Uint32(readlane(mki, j))
+                oe = readlane(me, j)
+                before = ((ok > mk) | ((ok == mk) & (oe < me))) & (j < n_c)
+                rank = rank + before.select(fx.Int32(1), fx.Int32(0))
+            _route_out(c, t, red, (lane < n_c) & (rank < TOPK), rank, me, ms)
     gpu.barrier()
 
 
@@ -667,6 +776,30 @@ def pick_tile(c, tile):
 
 
 @traced
+def load_latq4(c):
+    """``load_latq`` at ``few_rows``: the producer quantized
+    (``latent_mx_out``); a thread a block's 4 words and its code, one poll batch."""
+    s, tid = c["S"], c["tid"]
+    nblk = s * (LAT // 32)
+    its = (nblk + THREADS - 1) // THREADS
+    bs = [fx.min(tid + THREADS * i, nblk - 1) for i in range(its)]
+    lq = c["peer"]["latq4_own"]
+    ws = [b // (LAT // 32) * (LAT // 8) + b % (LAT // 32) * 4 for b in bs]
+    specs = [
+        sp
+        for b, w0 in zip(bs, ws)
+        for sp in ((lq, w0, 2), (lq, w0 + 2, 2), (lq, s * LAT // 8 + b, 1))
+    ]
+    got = c["poll"](specs, batch=3 * its)
+    for i in range_constexpr(its):
+        if tid + THREADS * i < nblk:
+            v = fx.Vector.from_elements(got[3 * i] + got[3 * i + 1], fx.Int32)
+            fx.ptr_store(v, c["latq"] + ws[i])
+            fx.ptr_store(got[3 * i + 2][0], c["latsc"] + bs[i])
+    gpu.barrier()
+
+
+@traced
 def load_latq(c):
     """LAT (every rank's 448 columns) -> MXFP4 as aiter's inline quant: a
     thread a (token, 32-block): amax of |bf16| bits, the ceil code of amax / 6,
@@ -686,8 +819,9 @@ def load_latq(c):
         t = b // (LAT // 32)
         kb = b % (LAT // 32)
         base = (t * LAT + kb * 32) // 2
-        got = c["poll"]([(c["peer"]["lat_own"], base + j, 1) for j in range(16)])
-        ws = [got[j][0] for j in range(16)]
+        # the block's 16 pairs as 8 x 16 B loads: one poll batch
+        got = c["poll"]([(c["peer"]["lat_own"], base + 2 * j, 2) for j in range(8)])
+        ws = [got[j // 2][j % 2] for j in range(16)]
         am = fx.Int32(0)
         for w in ws:
             am = fx.max(am, w & 0x7FFF)
@@ -1104,12 +1238,13 @@ def sdown_tile(c, j, ops, t0, n):
                 cache_modifier=CM_DEV,
             )
         else:
-            for p in range_constexpr(TP):
-                c["put_bf"](
-                    c["peer"]["final"][p],
-                    (c["rank"] * s + tt) * HIDDEN + j * ROWS + 2 * rp,
-                    [v0, v1],
-                )
+            at = (c["rank"] * s + tt) * HIDDEN + j * ROWS + 2 * rp
+            if const_expr(two_shot(s)):
+                # to the columns' owner only: its up reduces them
+                c["put_bf"](peer_at(c["peer"]["final"], j // UP_TASKS), at, [v0, v1])
+            else:
+                for p in range_constexpr(TP):
+                    c["put_bf"](c["peer"]["final"][p], at, [v0, v1])
 
 
 @traced
@@ -1132,84 +1267,132 @@ def run_sdown_rest(c, bid, w_sd):
     up critical path."""
     r0 = LN0 + LN_TASKS  # 84: past the lnorm / up CTAs
     if bid >= r0:
-        load_h(c)
         lo = c["rank"] * UP_TASKS
-        for k in range(UP_TASKS + bid - r0, SD_TASKS, BLOCKS - r0):
-            j = (k + lo) % SD_TASKS
-            stage_sdown(c, j, gemv.loads(c["lane"], c["wave"], w_sd, j * ROWS, SI))
+        last = SD_TASKS - 1
+
+        def loads(k):
+            j = (fx.min(k, last) + lo) % SD_TASKS
+            return gemv.loads(c["lane"], c["wave"], w_sd, j * ROWS, SI)
+
+        # a task's weights issued a task ahead (the first before H is polled)
+        k = UP_TASKS + bid - r0
+        ops = loads(k)
+        load_h(c)
+        while k < SD_TASKS:
+            kn = k + (BLOCKS - r0)
+            ops_n = loads(kn)
+            stage_sdown(c, (k + lo) % SD_TASKS, ops)
+            k = kn
+            ops = ops_n
 
 
 # ---------------------------------------------------------------- lnorm / up / reduce
 @traced
-def stage_lnorm(c, j):
-    """Columns 128 j ..: the ranks' LATR (rank order, fp32 -> bf16), every
-    task's sum of squares -> rstd -> bf16(acc rstd w) -> LN, LNRDY (a wave a
-    token, 8 tokens a round)."""
+def stage_lnorm(c, t):
+    """Token t's latent row: the ranks' LATR (rank order, fp32 -> bf16; wave w
+    the 128-column chunks w, w + 8, ..), a chunk's sum of squares, summed in
+    chunk order -> rstd -> bf16(acc rstd w) -> LN row t, LNRDY[t]. The whole
+    row on one CTA: no partial sums of squares to exchange."""
     s, tid, lane, wave, red = c["S"], c["tid"], c["lane"], c["wave"], c["red"]
     a = c["args"]
-    assert s * 32 <= WAVES * 64 * 4
-    cp = tid % 64
-    col = j * 128 + 2 * cp
-    rounds = []
-    for rr in range_constexpr((s + WAVES - 1) // WAVES):
-        tr = rr * WAVES + wave
-        mine = tr < s
-        t = fx.min(tr, s - 1)
-        lo, hi = sum_partials(
-            c["poll"],
-            c["peer"]["latr_own"],
-            lambda src, t=t: ((src * s + t) * LAT + col) // 2,
-            TP,
-        )
-        lo, hi = bf16_round(lo), bf16_round(hi)
+    nch = (LN_TASKS + WAVES - 1) // WAVES  # a wave's chunks
+    js = [fx.min(wave + WAVES * i, LN_TASKS - 1) for i in range(nch)]
+    lives = [wave + WAVES * i < LN_TASKS for i in range(nch)]
+    cols = [j * 128 + 2 * lane for j in js]
+    rw = rsrc(a["ln_w"])
+    ws = [
+        fx.Float32(fx.BFloat16(bo.buffer_load(rw, col + d, vec_width=1, dtype=T.bf16)))
+        for col in cols
+        for d in range(2)
+    ]
+    # every chunk's TP partials in one poll batch
+    got = c["poll"](
+        [
+            (c["peer"]["latr_own"], ((src * s + t) * LAT + col) // 2, 1)
+            for col in cols
+            for src in range(TP)
+        ],
+        batch=nch * TP,
+    )
+    vals = []
+    for i in range_constexpr(nch):
+        acc0, acc1 = bf2_f32(got[i * TP][0])
+        for src in range_constexpr(1, TP):
+            lo, hi = bf2_f32(got[i * TP + src][0])
+            acc0 = acc0 + lo
+            acc1 = acc1 + hi
+        lo, hi = bf16_round(acc0), bf16_round(acc1)
         sq = wave_sum(lo * lo + hi * hi)
-        if mine & (lane == 0):
-            c["put"](c["lmsq"], j * s + t, sq)
-        rounds.append((mine, t, lo, hi))
+        if lives[i] & (lane == 0):
+            fx.ptr_store(sq, red + js[i])
+        vals.append((lo, hi))
     gpu.barrier()
-    for mine, t, _, _ in rounds:
-        if mine & (lane < LN_TASKS):
-            v = c["poll"]([(c["lmsq"], lane * s + t, 1)])[0][0]
-            fx.ptr_store(f32_of(v), red + (t * 32 + lane))
-    gpu.barrier()
-    w0 = fx.Float32(
-        fx.BFloat16(bo.buffer_load(rsrc(a["ln_w"]), col, vec_width=1, dtype=T.bf16))
-    )
-    w1 = fx.Float32(
-        fx.BFloat16(bo.buffer_load(rsrc(a["ln_w"]), col + 1, vec_width=1, dtype=T.bf16))
-    )
-    for mine, t, lo, hi in rounds:
-        tot = fx.ptr_load(red + t * 32)
-        for q in range_constexpr(1, LN_TASKS):
-            tot = tot + fx.ptr_load(red + (t * 32 + q))
-        r = hw_rsq(tot * fx.Float32(1.0 / LAT) + fx.Float32(c["ln_eps"]))
+    tot = fx.ptr_load(red + 0)
+    for q in range_constexpr(1, LN_TASKS):
+        tot = tot + fx.ptr_load(red + q)
+    r = hw_rsq(tot * fx.Float32(1.0 / LAT) + fx.Float32(c["ln_eps"]))
+    for i in range_constexpr(nch):
+        lo, hi = vals[i]
         y = (
-            fx.Vector.from_elements([lo * r * w0, hi * r * w1], fx.Float32)
+            fx.Vector.from_elements(
+                [lo * r * ws[2 * i], hi * r * ws[2 * i + 1]], fx.Float32
+            )
             .to(fx.BFloat16)
             .bitcast(fx.Int32)[0]
         )
-        if mine:
+        if lives[i]:
             bo.buffer_store(
-                y, rsrc(c["ln"]), (t * LAT + col) // 2, cache_modifier=CM_DEV
+                y, rsrc(c["ln"]), (t * LAT + cols[i]) // 2, cache_modifier=CM_DEV
             )
-    publish(c["put"], c["lnrdy"], j, fx.Int32(1), tid == 0)
+    publish(c["put"], c["lnrdy"], t, fx.Int32(1), tid == 0)
     gpu.barrier()
 
 
 @traced
-def stage_up(c, j):
+def run_lnorm(c, bid):
+    """The S latent rows on lnorm CTA bid (LN0 .. LN0 + LN_TASKS), a row a
+    round."""
+    s = c["S"]
+    for rr in range_constexpr((s + LN_TASKS - 1) // LN_TASKS):
+        t = bid - LN0 + LN_TASKS * rr
+        if t < s:
+            stage_lnorm(c, t)
+
+
+def up_splits(s):
+    """Above 16 rows the up tasks split by 16-row token tile (56 CTAs a tile):
+    the LN GEMV is MFMA-bound on 56 CTAs."""
+    n = gemv.tile_rows(LAT)
+    return s // n if s > n and s % n == 0 else 1
+
+
+@traced
+def run_up(c, bid):
+    s = c["S"]
+    if const_expr(up_splits(s) == 1):
+        stage_up(c, bid)
+    else:
+        stage_up(c, bid % UP_TASKS, bid // UP_TASKS)
+
+
+@traced
+def stage_up(c, j, tile=None):
     """This rank's up rows 16 j .. of its shard (hidden rows 896 rank ..): LN GEMV
     + SHP -> bf16 -> FINAL."""
     s, tid, lane, wave = c["S"], c["tid"], c["lane"], c["wave"]
     a = c["args"]
     ops = gemv.loads(lane, wave, a["w_up"], j * ROWS, LAT)
-    if tid < LN_TASKS:
+    if tid < s:
         c["poll"]([(c["lnrdy"], tid, 1)])
     if tid == 0:
         c["poll"]([(c["shrdy"], j, 1)])
     gpu.barrier()
-    for t0, n in gemv.token_tiles(s, gemv.tile_rows(LAT)):
-        up_tile(c, j, ops, t0, n)
+    if const_expr(tile is None):
+        for t0, n in gemv.token_tiles(s, gemv.tile_rows(LAT)):
+            up_tile(c, j, ops, t0, n)
+    else:
+        n = gemv.tile_rows(LAT)
+        up_tile(c, j, ops, tile * n, n)
 
 
 @traced
@@ -1237,12 +1420,29 @@ def up_tile(c, j, ops, t0, n):
         )
         v0 = bf16_round(bf_lo(w) + row_sum(red, 2 * rp, tl))
         v1 = bf16_round(bf_hi(w) + row_sum(red, 2 * rp + 1, tl))
-        for p in range_constexpr(TP):
-            c["put_bf"](
-                c["peer"]["final"][p],
-                (c["rank"] * s + tt) * HIDDEN + row0 + 2 * rp,
-                [v0, v1],
+        at = (c["rank"] * s + tt) * HIDDEN + row0 + 2 * rp
+        if const_expr(two_shot(s)):
+            # this rank owns the columns: its slot, the ranks' sum in rank order
+            # (as ``stage_reduce``) -> out, and to the other ranks' slot [rank]
+            c["put_bf"](c["peer"]["final_own"], at, [v0, v1])
+            lo, hi = sum_partials(
+                c["poll"],
+                c["peer"]["final_own"],
+                lambda src: ((src * s + tt) * HIDDEN + row0 + 2 * rp) // 2,
+                TP,
             )
+            y = fx.Vector.from_elements([lo, hi], fx.Float32).to(fx.BFloat16)
+            bo.buffer_store(
+                y.bitcast(fx.Int32)[0],
+                rsrc(c["args"]["out"]),
+                (tt * HIDDEN + row0 + 2 * rp) // 2,
+            )
+            for p in range_constexpr(TP):
+                if p != c["rank"]:
+                    c["put_bf"](c["peer"]["final"][p], at, [lo, hi])
+        else:
+            for p in range_constexpr(TP):
+                c["put_bf"](c["peer"]["final"][p], at, [v0, v1])
     gpu.barrier()
 
 
@@ -1252,16 +1452,27 @@ def stage_reduce(c, j):
     s, tid = c["S"], c["tid"]
     for i in range_constexpr((s * 64 + THREADS - 1) // THREADS):
         idx = tid + THREADS * i
-        if idx < s * 64:
+        # two-shot: the owner's up wrote its columns
+        live = idx < s * 64
+        if const_expr(two_shot(s)):
+            live = live & (j * 128 // UP_N != c["rank"])
+        if live:
             t = idx // 64
             cp = idx % 64
             col = j * 128 + 2 * cp
-            lo, hi = sum_partials(
-                c["poll"],
-                c["peer"]["final_own"],
-                lambda src, t=t, col=col: ((src * s + t) * HIDDEN + col) // 2,
-                TP,
-            )
+            if const_expr(two_shot(s)):
+                # the owner's up reduced the columns: its slot [owner]
+                at = ((j * 128 // UP_N) * s + t) * HIDDEN + col
+                lo, hi = bf2_f32(
+                    c["poll"]([(c["peer"]["final_own"], at // 2, 1)])[0][0]
+                )
+            else:
+                lo, hi = sum_partials(
+                    c["poll"],
+                    c["peer"]["final_own"],
+                    lambda src, t=t, col=col: ((src * s + t) * HIDDEN + col) // 2,
+                    TP,
+                )
             w = (
                 fx.Vector.from_elements([lo, hi], fx.Float32)
                 .to(fx.BFloat16)

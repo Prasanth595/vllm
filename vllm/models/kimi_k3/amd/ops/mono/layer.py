@@ -79,7 +79,7 @@ H0 = 8  # the shared SiTU's CTAs (after their AttnRes work)
 SD0 = k2b.DOWN_TASKS  # 224: the shared down's CTAs
 # timeline points: 0 start, 1 o_proj done / AR reduced, 2 early done / slice,
 # 3 ug, 4 down/sdown, 5 lnorm, 6 up, 7 reduce, 8 gate, 9 mix (x published),
-# 10 route, 11 route table, 12 latent quant, 13 route starts
+# 10 route, 11 route table, 12 latent quant, 13 the shared SiTU's h done
 TL_POINTS = 17  # + 14 (unused), 15 INTER loaded, 16 down done
 
 assert E0 + k2b.R_TASKS + k2b.L_TASKS <= BLOCKS and k2b.G_TASKS <= E0 - O0
@@ -341,7 +341,7 @@ def build(key: K2Build):
         bases = peer_bases(peers, TP_)
         own = load_ptr64(peers, rank)
         peer = {}
-        for region in ("rlog", "lat", "latr", "final", "ar"):
+        for region in ("rlog", "lat", "latq4", "latr", "final", "ar"):
             off = play[region][0]
             peer[region] = [
                 shift(preg(b, off, region), fx.Int64(par) * half) for b in bases
@@ -434,7 +434,6 @@ def build(key: K2Build):
             "route",
             "inter",
             "isc",
-            "lmsq",
             "lnrdy",
             "shrdy",
         ):
@@ -474,21 +473,25 @@ def build(key: K2Build):
             stamp(on, tls, tid, 8)
             stage_mix(c, bid)
             stamp(on, tls, tid, 9)
+            # the shared SiTU of token t on CTA (t + H0) % 56, first: SGU lands
+            # before the logits
+            hb = (bid + NA - H0) % NA
+            for rr in range_constexpr((s + NA - 1) // NA):
+                if hb + NA * rr < s:
+                    k2b.stage_h(c, hb + NA * rr)
             stamp(on, tls, tid, 13)
             for rr in range_constexpr((s + NA - 1) // NA):
                 if bid + NA * rr < s:
                     k2b.stage_route(c, bid + NA * rr)
             stamp(on, tls, tid, 10)
-            # the shared SiTU of token t on CTA (t + H0) % 56
-            hb = (bid + NA - H0) % NA
-            for rr in range_constexpr((s + NA - 1) // NA):
-                if hb + NA * rr < s:
-                    k2b.stage_h(c, hb + NA * rr)
         if bid >= NA:
             stamp(on, tls, tid, 2)
         # ---- the routed experts
         # the latent (ready ~10 us before the route) quantized first
-        k2b.load_latq(c)
+        if const_expr(k2b.few_rows(s)):
+            k2b.load_latq4(c)
+        else:
+            k2b.load_latq(c)
         stamp(on, tls, tid, 12)
         nt = k2b.load_route(c)
         stamp(on, tls, tid, 11)
@@ -516,10 +519,10 @@ def build(key: K2Build):
         k2b.run_sdown(c, bid, w_sd)
         stamp(on, tls, tid, 4)
         if (bid >= k2b.LN0) & (bid < k2b.LN0 + k2b.LN_TASKS):
-            k2b.stage_lnorm(c, bid - k2b.LN0)
+            k2b.run_lnorm(c, bid)
         stamp(on, tls, tid, 5)
-        if bid < k2b.UP_TASKS:
-            k2b.stage_up(c, bid)
+        if bid < k2b.UP_TASKS * k2b.up_splits(s):
+            k2b.run_up(c, bid)
         stamp(on, tls, tid, 6)
         if const_expr(key.reduce):  # noqa: SIM102 (traced: `and` does not combine traced values)
             if (bid >= k2b.RED0) & (bid < k2b.RED0 + k2b.RED_TASKS):

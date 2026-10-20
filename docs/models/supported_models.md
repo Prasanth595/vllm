@@ -713,6 +713,12 @@ Some models are supported only via the [Transformers modeling backend](#transfor
     image and video only.
 
 !!! note
+    On ROCm, `Step5ForConditionalGeneration` requires `--moe-backend triton` and a
+    BF16 KV cache. Use `--attention-backend ROCM_AITER_UNIFIED_ATTN` for long
+    contexts. The checkpoint ships three MTP layers, enabled with
+    `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`.
+
+!!! note
     The official `openbmb/MiniCPM-V-2` doesn't work yet, so we need to use a fork (`HwwwH/MiniCPM-V-2`) for now.
     For more details, please see: <https://github.com/vllm-project/vllm/pull/4087#issuecomment-2250397630>
 

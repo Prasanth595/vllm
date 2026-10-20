@@ -482,7 +482,7 @@ def test_compilation_config():
 
 
 def test_trust_request_mm_kwargs_cli():
-    from vllm.entrypoints.launchers.cli_args import FrontendArgs
+    from vllm.entrypoints.common.cli_args import FrontendArgs
 
     parser = FrontendArgs.add_cli_args(FlexibleArgumentParser())
 

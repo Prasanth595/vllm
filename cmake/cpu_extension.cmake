@@ -497,6 +497,7 @@ set(VLLM_EXT_SRC
     "csrc/cpu/mla_decode.cpp"
     "csrc/cpu/pos_encoding.cpp"
     "csrc/cpu/mamba_cpu.cpp"
+    "csrc/cpu/topk_topp_sampler.cpp"
     "csrc/cpu/dynamic_4bit_int_moe_cpu.cpp"
     "csrc/cpu/cpu_fused_moe.cpp"
     "csrc/cpu/cpu_attn.cpp"
@@ -593,6 +594,7 @@ if (ENABLE_X86_ISA)
         "csrc/cpu/dnnl_kernels.cpp"
         "csrc/cpu/mamba_cpu.cpp"
         "csrc/cpu/sampling_kernels.cpp"
+        "csrc/cpu/topk_topp_sampler.cpp"
         "csrc/cpu/torch_bindings.cpp"
         # TODO: Remove these files
         "csrc/cpu/activation.cpp"
@@ -611,6 +613,7 @@ if (ENABLE_X86_ISA)
         "csrc/cpu/mamba_cpu.cpp"
         "csrc/cpu/dnnl_kernels.cpp"
         "csrc/cpu/sampling_kernels.cpp"
+        "csrc/cpu/topk_topp_sampler.cpp"
         "csrc/cpu/torch_bindings.cpp"
         # TODO: Remove these files
         "csrc/cpu/activation.cpp"

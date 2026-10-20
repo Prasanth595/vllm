@@ -50,6 +50,9 @@ from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
 )
+from vllm.model_executor.layers.mamba.ops.rocm_qwen_mtp_conv_gdn_norm import (
+    launch_conv_gdn_norm,
+)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.auto_awq import AutoAWQConfig
 from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
@@ -1078,13 +1081,127 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output, _ = self.out_proj(core_attn_out.flatten(-2))
         return output
 
+    @functools.cached_property
+    def _rocm_qwen_mtp_layer_reasons(self) -> list[str]:
+        reasons = []
+        if self.tp_size != 1:
+            reasons.append(f"tp_size={self.tp_size}, supported value is 1")
+        if self.conv1d.bias is not None:
+            reasons.append("conv bias is not supported")
+        if self.activation not in ("silu", "swish"):
+            reasons.append(f"activation={self.activation}")
+        if self.norm.activation not in ("silu", "swish", "sigmoid"):
+            reasons.append(f"norm activation={self.norm.activation}")
+        if self.norm.group_size is not None or not self.norm.norm_before_gate:
+            reasons.append("norm must be full-row and norm-before-gate")
+        return reasons
+
+    def _try_rocm_qwen_mtp_gdn(
+        self,
+        mixed_qkv: torch.Tensor,
+        b: torch.Tensor,
+        a: torch.Tensor,
+        z: torch.Tensor,
+        core_attn_out: torch.Tensor,
+    ) -> bool:
+        """Write normed MTP output into ``core_attn_out``. False when this
+        step is not MTP-only."""
+        forward_context = get_forward_context()
+        attn_metadata_raw = forward_context.attn_metadata
+        attn_metadata = None
+        if isinstance(attn_metadata_raw, dict):
+            attn_metadata = attn_metadata_raw.get(self.prefix)
+        if not isinstance(attn_metadata, GDNAttentionMetadata):
+            return False
+        if (
+            attn_metadata.spec_sequence_masks is None
+            or attn_metadata.num_prefills != 0
+            or attn_metadata.num_decodes != 0
+        ):
+            return False
+
+        if self._rocm_qwen_mtp_layer_reasons:
+            raise ValueError(
+                "VLLM_ROCM_QWEN_MTP_GDN cannot run this layer: "
+                + "; ".join(self._rocm_qwen_mtp_layer_reasons)
+            )
+        n_seq = attn_metadata.num_spec_decodes
+        indices = attn_metadata.spec_state_indices_tensor
+        accepted = attn_metadata.num_accepted_tokens
+        uniform = attn_metadata.uniform_spec_sequence_length
+        cu_seqlens = attn_metadata.spec_query_start_loc
+        assert indices is not None and accepted is not None and cu_seqlens is not None
+        max_len = uniform or indices.size(1)
+        conv_state = (
+            self.kv_cache[0]
+            if is_conv_state_dim_first()
+            else self.kv_cache[0].transpose(-1, -2)
+        )
+        conv_weights = self.conv1d.weight.view(
+            self.conv1d.weight.size(0), self.conv1d.weight.size(2)
+        )
+        if uniform is not None:
+            tokens = n_seq * uniform
+            varlen_loc = None
+        else:
+            tokens = mixed_qkv.size(0)
+            varlen_loc = cu_seqlens[: n_seq + 1]
+        out = core_attn_out[:tokens]
+        launch_conv_gdn_norm(
+            mixed_qkv[:tokens],
+            conv_weights,
+            conv_state,
+            a[:tokens],
+            b[:tokens],
+            self.A_log,
+            self.dt_bias,
+            indices[:n_seq, :max_len],
+            accepted[:n_seq],
+            self.kv_cache[1],
+            out,
+            z[:tokens],
+            self.norm.weight,
+            self.norm.eps,
+            out,
+            gate_sigmoid=self.norm.activation == "sigmoid",
+            n_seq=n_seq,
+            cu_seqlens=varlen_loc,
+        )
+        logger.info_once("Using ROCm fused Qwen MTP conv+GDN+norm kernel")
+        return True
+
+    def _forward_core_rocm_qwen_mtp(
+        self,
+        mixed_qkv: torch.Tensor,
+        b: torch.Tensor,
+        a: torch.Tensor,
+        z: torch.Tensor,
+        core_attn_out: torch.Tensor,
+    ) -> None:
+        """Fused path is already normed. The stock path norms here, once.
+
+        ``core_attn_out`` arrives zeroed; the fused path leaves padded rows
+        untouched."""
+        if self._try_rocm_qwen_mtp_gdn(mixed_qkv, b, a, z, core_attn_out):
+            return
+        self._forward_core(
+            mixed_qkv=mixed_qkv,
+            b=b.contiguous(),
+            a=a.contiguous(),
+            core_attn_out=core_attn_out,
+        )
+        core_attn_out.copy_(self.norm(core_attn_out, z))
+
     def forward_hip(
         self,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         """ROCm forward using AITER Triton fused projection+attention when
         available, otherwise falling back to the generic CUDA path."""
-        if GDN_AITER_TRITON_AVAILABLE:
+        use_qwen_mtp_gdn = (
+            envs.VLLM_ROCM_QWEN_MTP_GDN and not self.gqa_interleaved_layout
+        )
+        if GDN_AITER_TRITON_AVAILABLE and not use_qwen_mtp_gdn:
             num_tokens = hidden_states.size(0)
             projected_states_qkvz, _ = self.in_proj_qkvz(hidden_states)
             projected_states_ba, _ = self.in_proj_ba(hidden_states)
@@ -1166,6 +1283,23 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             mixed_qkv, z = mixed_qkvz.split([qkv_size, z_size], dim=-1)
             z = z.reshape(z.size(0), -1, self.head_v_dim)
             b, a = self.split_ba(ba)
+
+        if envs.VLLM_ROCM_QWEN_MTP_GDN and not self.gqa_interleaved_layout:
+            core_attn_out = torch.zeros(
+                (num_tokens, self.num_v_heads // self.tp_size, self.head_v_dim),
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+            )
+            torch.ops.vllm.qwen_gdn_attention_core_rocm_mtp(
+                mixed_qkv,
+                b,
+                a,
+                z,
+                core_attn_out,
+                layer_name=_encode_layer_name(self.prefix),
+            )
+            output, _ = self.out_proj(core_attn_out.flatten(-2))
+            return output
 
         # ============================================================
         # Part 2: Core Attention (Custom Op)
@@ -2290,5 +2424,34 @@ def qwen_gdn_attention_core_fused_norm_packed(
 direct_register_custom_op(
     op_name="qwen_gdn_attention_core_fused_norm_packed",
     op_func=qwen_gdn_attention_core_fused_norm_packed,
+    mutates_args=["core_attn_out"],
+)
+
+
+@eager_break_during_capture
+def qwen_gdn_attention_core_rocm_mtp(
+    mixed_qkv: torch.Tensor,
+    b: torch.Tensor,
+    a: torch.Tensor,
+    z: torch.Tensor,
+    core_attn_out: torch.Tensor,
+    layer_name: LayerNameType,
+) -> None:
+    """MTP vs stock depends on per-step metadata, so it stays in this op."""
+    layer_name = _resolve_layer_name(layer_name)
+    forward_context: ForwardContext = get_forward_context()
+    self = forward_context.no_compile_layers[layer_name]
+    self._forward_core_rocm_qwen_mtp(
+        mixed_qkv=mixed_qkv,
+        b=b,
+        a=a,
+        z=z,
+        core_attn_out=core_attn_out,
+    )
+
+
+direct_register_custom_op(
+    op_name="qwen_gdn_attention_core_rocm_mtp",
+    op_func=qwen_gdn_attention_core_rocm_mtp,
     mutates_args=["core_attn_out"],
 )

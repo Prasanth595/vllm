@@ -260,8 +260,32 @@ The PR needs to meet the following code quality standards:
   understand the code.
 - Include sufficient tests to ensure the project stays correct and robust. This
   includes both unit tests and integration tests.
-- Please add documentation to `docs/` if the PR modifies the user-facing behaviors of vLLM.
-  It helps vLLM users understand and utilize the new features or changes.
+- Document user-visible changes in the same PR; see
+  [Documenting User-Visible Changes](#documenting-user-visible-changes).
+
+### Documenting User-Visible Changes
+
+If a PR changes what users can run, configure, or observe, update the rendered
+docs in the same PR. Code comments, tests, and PR descriptions alone are not found
+by users or their agents.
+
+| Change | Document it in |
+| ------ | -------------- |
+| Feature or behavior change | Its page under `docs/features/` (or guide), linked from [Features](../features/README.md) |
+| CLI argument or config field | The docstring or `help=` text, which generates [Engine Arguments](../configuration/engine_args.md) and the [CLI reference](../cli/README.md) |
+| Environment variable | Its comment in `environment_variables`, which generates [Environment Variables](../configuration/env_vars.md) |
+| Model | [Supported Models](../models/supported_models.md) |
+| Hardware support | That hardware's installation page and the feature x hardware matrix |
+| Default change, deprecation, removal | The item's page, per the [deprecation policy](deprecation_policy.md) |
+
+Start with what it is, how to enable it (exact flag or variable), the default, and
+`Available in vLLM vX.Y.0 and later.` Use the exact names users search for, and
+link the page from its index.
+
+To check, ask a fresh agent one user question (e.g. "What does `VLLM_FOO` do?")
+three times, limited to web search, GitHub, and a local checkout in turn. Before
+merge, use the docs preview and the PR branch. If it cannot find and quote the
+docs, fix the docs.
 
 ### Adding or Changing Kernels
 

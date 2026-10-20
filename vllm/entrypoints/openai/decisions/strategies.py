@@ -13,6 +13,7 @@ import random
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, ClassVar, TypeVar
@@ -96,6 +97,7 @@ class QuestionRead:
     output_tokens: int
     cached_tokens: int = 0
     cache_write_tokens: int = 0
+    confidence: float | None = None
 
 
 class ReadPromptRequest(OpenAIBaseModel):
@@ -160,6 +162,45 @@ class ReadStrategy(ABC):
     def num_requests(self, questions: list[Question]) -> int:
         """The engine requests a decision takes."""
         return len(questions)
+
+    async def read_input(
+        self,
+        questions: list[Question],
+        instructions: str | None,
+        state: str | list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> list[QuestionRead]:
+        """Adapt ordered API input only when the model's protocol supports it."""
+        if isinstance(state, str):
+            return await self.read(questions, instructions, state, **kwargs)
+        if (
+            "image" not in self.modalities
+            or not self.context.engine_client.model_config.is_multimodal_model
+        ):
+            raise StructuredDecisionError("This model does not support image input")
+        images, texts = [], []
+        has_text = False
+        for message in state:
+            message_text = []
+            for part in message["content"]:
+                if part["type"] == "image_url":
+                    if has_text:
+                        raise StructuredDecisionError(
+                            "This strategy requires images before text; "
+                            "interleaved input is unsupported"
+                        )
+                    images.append(part["image_url"]["url"])
+                else:
+                    message_text.append(part["text"])
+                    has_text = has_text or bool(part["text"])
+            texts.append("\n".join(message_text))
+        return await self.read(
+            questions,
+            instructions,
+            "\n\n".join(texts),
+            media={"image": images},
+            **kwargs,
+        )
 
     @abstractmethod
     async def read(
@@ -335,6 +376,20 @@ class NextTokenStrategy(ReadStrategy):
         ).token_ids
         return engine_input, list(prompt_ids or [])
 
+    async def read_input(
+        self,
+        questions: list[Question],
+        instructions: str | None,
+        state: str | list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> list[QuestionRead]:
+        if (
+            not isinstance(state, str)
+            and not self.context.engine_client.model_config.is_multimodal_model
+        ):
+            raise StructuredDecisionError("This model does not support image input")
+        return await self.read(questions, instructions, state, **kwargs)
+
     async def _warm_shared_prefix(
         self,
         prompts: Sequence[Sequence[int]],
@@ -377,7 +432,7 @@ class NextTokenStrategy(ReadStrategy):
         self,
         questions: list[Question],
         instructions: str | None,
-        state: str,
+        state: str | list[dict[str, Any]],
         *,
         request_id: str,
         chat_template_kwargs: dict[str, Any] | None,
@@ -393,10 +448,16 @@ class NextTokenStrategy(ReadStrategy):
 
         slots, engine_inputs, params, prompts = [], [], [], []
         for q in questions:
-            content: Any = self._content(state, q)
-            if image_parts:
-                content = [*image_parts, {"type": "text", "text": content}]
-            messages = [{"role": "user", "content": content}]
+            if isinstance(state, str):
+                content: Any = self._content(state, q)
+                if image_parts:
+                    content = [*image_parts, {"type": "text", "text": content}]
+                messages = [{"role": "user", "content": content}]
+            else:
+                messages = deepcopy(state)
+                messages[-1]["content"].append(
+                    {"type": "text", "text": self._content("", q)}
+                )
             if instructions:
                 messages.insert(0, {"role": "system", "content": instructions})
             engine_input, prompt_ids = await self._render(read_request, messages)
@@ -412,14 +473,16 @@ class NextTokenStrategy(ReadStrategy):
                 self._sampling_params([i for ids in slots[-1] for i in ids], prompt_ids)
             )
 
-        await self._warm_shared_prefix(
-            prompts,
-            request_id,
-            lora_request=lora_request,
-            priority=priority,
-            cache_salt=cache_salt,
-            trace_headers=trace_headers,
-        )
+        # Token-only warmup cannot carry image data or expanded placeholders.
+        if isinstance(state, str) and not image_parts:
+            await self._warm_shared_prefix(
+                prompts,
+                request_id,
+                lora_request=lora_request,
+                priority=priority,
+                cache_salt=cache_salt,
+                trace_headers=trace_headers,
+            )
         label_reads = await next_token_label_reads(
             ctx.engine_client,
             engine_inputs,
@@ -535,6 +598,18 @@ class LiquidStrategy(NextTokenStrategy):
     modalities = frozenset({"image"})
     # runner.py bounds every picture at 1024 x 1024 pixels before the processor.
     max_image_pixels = 1024 * 1024
+
+    async def read_input(
+        self,
+        questions: list[Question],
+        instructions: str | None,
+        state: str | list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> list[QuestionRead]:
+        # The checkpoint requires an image prefix followed by its fixed text prompt.
+        return await ReadStrategy.read_input(
+            self, questions, instructions, state, **kwargs
+        )
 
     def render_state(self, state: Any) -> str:
         if state is None:
@@ -1240,6 +1315,21 @@ def select_read_strategy(
     model_config: ModelConfig, supported_tasks: Sequence[SupportedTask]
 ) -> type[ReadStrategy]:
     """Raise ValueError when the model cannot serve structured decisions."""
+    config = getattr(model_config, "hf_config", None)
+    protocol = getattr(config, "decision_read_strategy", None)
+    if protocol == "winnow":
+        from .winnow import WinnowStrategy
+
+        if model_config.architecture not in {
+            "Gemma4ForCausalLM",
+            "Gemma4ForConditionalGeneration",
+        }:
+            raise ValueError(
+                "Winnow requires a Gemma4 causal or conditional-generation export"
+            )
+        if model_config.logprobs_mode != "raw_logprobs":
+            raise ValueError("Winnow requires raw_logprobs")
+        return WinnowStrategy
     strategy = READ_STRATEGIES.get(model_config.architecture)
     if strategy is None:
         raise ValueError(

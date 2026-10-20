@@ -440,6 +440,12 @@ def test_standard_attention_backend_selection(
     monkeypatch,
 ):
     """Standard ROCm backends remain selectable without DCP and reject DCP."""
+    # These cases describe vLLM's default order; gfx1201 and gfx1100 swap
+    # ROCM_ATTN and TRITON_ATTN (covered by test_rdna_prefers_triton_attn).
+    import vllm.platforms.rocm as rocm
+
+    monkeypatch.setattr(rocm, "on_gfx1201", lambda: False)
+    monkeypatch.setattr(rocm, "on_gfx1100", lambda: False)
     # Set environment variables
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
@@ -481,6 +487,61 @@ def test_standard_attention_backend_selection(
     )
 
     assert backend_path == expected_backend_path
+
+
+_AUTO_KV = dict(
+    head_size=128, dtype=torch.bfloat16, kv_cache_dtype="auto", block_size=16
+)
+
+
+@pytest.mark.parametrize(
+    "arch, selector_kwargs, expected_backend",
+    [
+        # gfx1201: TRITON_ATTN, including where ROCM_ATTN would use its HIP
+        # paged-attention decode kernel (head 128, block 16, bf16, `auto` KV).
+        ("gfx1201", {}, AttentionBackendEnum.TRITON_ATTN),
+        ("gfx1201", {"head_size": 256}, AttentionBackendEnum.TRITON_ATTN),
+        ("gfx1201", {"kv_cache_dtype": "fp8"}, AttentionBackendEnum.TRITON_ATTN),
+        # An fp8_e5m2 cache keeps ROCM_ATTN (see get_valid_backends()).
+        (
+            "gfx1201",
+            {"kv_cache_dtype": "fp8_e5m2"},
+            AttentionBackendEnum.ROCM_ATTN,
+        ),
+        # gfx1100: the same swap.
+        ("gfx1100", {}, AttentionBackendEnum.TRITON_ATTN),
+        ("gfx1100", {"head_size": 64}, AttentionBackendEnum.TRITON_ATTN),
+        ("gfx1100", {"head_size": 256}, AttentionBackendEnum.TRITON_ATTN),
+        ("gfx1100", {"kv_cache_dtype": "fp8"}, AttentionBackendEnum.TRITON_ATTN),
+        (
+            "gfx1100",
+            {"kv_cache_dtype": "fp8_e5m2"},
+            AttentionBackendEnum.ROCM_ATTN,
+        ),
+        # Other archs keep vLLM's default order (ROCM_ATTN first).
+        ("gfx1200", {}, AttentionBackendEnum.ROCM_ATTN),
+        ("gfx1101", {}, AttentionBackendEnum.ROCM_ATTN),
+        ("other", {}, AttentionBackendEnum.ROCM_ATTN),
+    ],
+)
+def test_rdna_prefers_triton_attn(
+    arch,
+    selector_kwargs,
+    expected_backend,
+    mock_get_cdna_version,
+    cleared_attention_selector_cache,
+    monkeypatch,
+):
+    import vllm.platforms.rocm as rocm
+
+    monkeypatch.setattr(rocm, "on_gfx1201", lambda: arch == "gfx1201")
+    monkeypatch.setattr(rocm, "on_gfx1100", lambda: arch == "gfx1100")
+    monkeypatch.setattr(rocm, "on_rdna4", lambda: arch in ("gfx1200", "gfx1201"))
+    config = AttentionSelectorConfig(**{**_AUTO_KV, **selector_kwargs})
+    backend_path = rocm.RocmPlatform.get_attn_backend_cls(
+        selected_backend=None, attn_selector_config=config
+    )
+    assert backend_path == expected_backend.get_path()
 
 
 @pytest.mark.parametrize("use_dcp", [False, True])
@@ -739,7 +800,13 @@ def turboquant_run_config():
 
 def test_turboquant_boundary_selection_is_not_cached_from_ordinary_run(
     cleared_attention_selector_cache,
+    monkeypatch,
 ):
+    import vllm.platforms.rocm as rocm
+
+    # The ordinary run expects vLLM's default order (gfx1201/gfx1100 swap it).
+    monkeypatch.setattr(rocm, "on_gfx1201", lambda: False)
+    monkeypatch.setattr(rocm, "on_gfx1100", lambda: False)
     from vllm.config import CacheConfig, VllmConfig, set_current_vllm_config
     from vllm.v1.attention.backends.utils import get_supported_kv_cache_layouts
     from vllm.v1.attention.selector import get_attn_backend

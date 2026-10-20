@@ -36,6 +36,76 @@ float8_info = torch.finfo(current_platform.fp8_dtype())
 # Longest per-request query (e.g. 1 + num_speculative_tokens) run by split-K.
 MAX_3D_QUERY_LEN = 8
 
+is_gfx1201 = False
+if current_platform.is_rocm():
+    from vllm.platforms.rocm import on_gfx1201
+
+    is_gfx1201 = on_gfx1201()
+
+# gfx1201 2D launch configs for prefill / chunked-prefill / mixed batches:
+# padded head_size -> (config for 64 < max_seqlen_q < 4096,
+# for max_seqlen_q >= 4096), each config = (BLOCK_M, TILE_SIZE, num_warps,
+# num_stages). Keyed by the padded head size (next power of 2) because the
+# kernel's tiles use it: head_size 96 runs as 128, 192 as 256.
+_GFX1201_2D_CONFIGS = {
+    64: ((64, 64, 4, 1), (128, 64, 8, 1)),
+    128: ((64, 32, 4, 1), (128, 32, 8, 2)),
+    256: ((32, 32, 4, 1), (128, 32, 8, 1)),
+    512: ((64, 16, 8, 1), (64, 16, 8, 1)),
+}
+# gfx1201 2D decode (batches above the 3D threshold): padded head size ->
+# (TILE_SIZE, num_warps, num_stages).
+_GFX1201_2D_DECODE_CONFIGS = {
+    128: (16, 2, 1),
+    256: (16, 2, 1),
+    512: (16, 8, 1),
+}
+# gfx1201 3D (split-KV) decode: padded head size -> most segments per request.
+_GFX1201_3D_MAX_SEGMENTS = {64: 128, 128: 128, 256: 64}
+
+is_gfx1100 = False
+if current_platform.is_rocm():
+    from vllm.platforms.rocm import on_gfx1100
+
+    is_gfx1100 = on_gfx1100()
+
+# gfx1100 2D launch configs for batches with prefill tokens (max_seqlen_q > 1):
+# padded head_size -> (config for max_seqlen_q <= 64, 64 < max_seqlen_q < 4096,
+# max_seqlen_q >= 4096), each config = (BLOCK_M, TILE_SIZE, num_warps,
+# num_stages) or None for the default launch. From a synthetic sweep (head_dim
+# 64/128/256/512, GQA 1-16, KV heads 1-8, block size 16/528, bf16): per band,
+# the best geomean speedup with at most 1% of batches below 0.97x and none
+# below 0.8x.
+_GFX1100_2D_CONFIGS = {
+    64: ((16, 32, 2, 1), (32, 32, 2, 1), (128, 64, 8, 1)),
+    128: (None, (64, 32, 4, 1), (128, 32, 8, 1)),
+    256: ((32, 32, 8, 1), (64, 32, 8, 1), (128, 64, 8, 1)),
+    512: ((64, 32, 8, 1), (64, 32, 8, 1), (64, 32, 8, 1)),
+}
+# gfx1100 2D decode (batches above the 3D threshold): padded head size ->
+# (TILE_SIZE, num_warps, num_stages); BLOCK_M keeps its default. Head 64:
+# 1.37x geomean, 4% of batches below 0.97x (worst 0.89x).
+_GFX1100_2D_DECODE_CONFIGS = {
+    64: (16, 2, 1),
+    128: (16, 2, 1),
+    256: (16, 4, 1),
+    512: (32, 8, 1),
+}
+# gfx1100 3D (split-KV) decode: 16 segments under-fill the GPU when few sequences x
+# KV heads run (one request on 2 KV heads: 32 programs for 48 CUs). Use
+# next_pow2(T / (num_seqs * num_kv_heads)) segments, at most 128; x8 for sliding
+# windows >= 512 (segments outside the window are idle). Padded head size ->
+# (T, (TILE_SIZE, num_warps, num_stages)). Only values fixed per CUDA graph are used.
+_GFX1100_3D_CONFIGS = {
+    64: (512, (16, 2, 1)),
+    128: (128, (16, 4, 1)),
+    256: (128, (16, 4, 1)),
+    512: (64, (32, 8, 1)),
+}
+# gfx1100 sliding-window decode: padded head size -> num_seqs * num_kv_heads from
+# which the 2D launch is faster than 3D.
+_GFX1100_SW_2D_MIN_FILL = {64: 32, 512: 8}
+
 
 @triton.jit
 def _cast_kv_tile(data, Q, tensor_scale, KV_QUANT_MODE: tl.constexpr):
@@ -980,6 +1050,38 @@ def unified_attention(
         launch_num_warps = 8
         launch_num_stages = 2
 
+    # gfx1201: the default BLOCK_M=16 gives each program only 16 / GQA query
+    # rows, too few for prefill. Taller Q blocks are ~2x faster for prefill,
+    # chunked-prefill and mixed batches (synthetic sweep over head_dim
+    # 64/128/256/512, GQA 1-16, KV heads 1-8, block size 16/528, bf16 and
+    # fp8 query). An fp8 query needs TILE_SIZE >= 32 (fp8 P @ V dot); configs
+    # with a narrower tile are not used for it.
+    gfx1201_tile_prefill = None
+    gfx1201_head_size = triton.next_power_of_2(head_size)
+    if (
+        is_gfx1201
+        and gfx1201_head_size in _GFX1201_2D_CONFIGS
+        and max_seqlen_q > 64
+        and num_queries_per_kv <= 16
+        and q.element_size() <= 2
+        and not is_batch_invariant
+    ):
+        mid_cfg, long_cfg = _GFX1201_2D_CONFIGS[gfx1201_head_size]
+        cfg_block_m, cfg_tile, cfg_warps, cfg_stages = (
+            long_cfg if max_seqlen_q >= 4096 else mid_cfg
+        )
+        # A decode-heavy mixed batch with few Q heads per KV head would pad
+        # every decode sequence to BLOCK_Q rows; keep the default there.
+        avg_query_len = q.shape[0] // max(num_seqs, 1)
+        if not (cfg_block_m // num_queries_per_kv > 16 and avg_query_len < 16) and (
+            q.element_size() == 2 or cfg_tile >= 32
+        ):
+            BLOCK_M = cfg_block_m
+            BLOCK_Q = BLOCK_M // num_queries_per_kv
+            gfx1201_tile_prefill = cfg_tile
+            launch_num_warps = cfg_warps
+            launch_num_stages = cfg_stages
+
     # Ideally we would launch with kernel with:
     # \sum_i[ceil(query_len[i] / BLOCK_Q)] blocks.
     # However, it is slow to realize the query_lens on cpu.
@@ -1012,6 +1114,8 @@ def unified_attention(
     # path (used when max_seqlen_q > 1) reads TILE_SIZE_PREFILL.
     if tuned_large_head:
         TILE_SIZE_PREFILL = 128
+    elif gfx1201_tile_prefill is not None:
+        TILE_SIZE_PREFILL = gfx1201_tile_prefill
 
     # USE_TD requires BLOCK_SIZE % TILE_SIZE == 0 (enforced by a
     # ``tl.static_assert`` in the kernel).  The default prefill tile
@@ -1059,6 +1163,19 @@ def unified_attention(
             f"(out.stride(1) = {out.stride(1)} != head_size = {head_size})."
         )
 
+    # gfx1201 decode: switch to the 2D kernel at half the threshold
+    # (64 // num_kv_heads sequences instead of 128 // num_kv_heads). Split-KV
+    # cuts short contexts into tiny segments, so 2D is faster earlier; short
+    # multi-token queries and fp8 KV caches keep the full threshold.
+    if (
+        is_gfx1201
+        and max_seqlen_q == 1
+        and k.element_size() == 2
+        and seq_threshold_3D is not None
+        and not is_batch_invariant
+    ):
+        seq_threshold_3D = max(1, seq_threshold_3D // 2)
+
     # Launch the 2D kernel if
     # 1. No split-K threshold or scratch buffers, or the scratch has fewer
     #    rows than query tokens, or
@@ -1090,6 +1207,74 @@ def unified_attention(
         logger.debug_once("Split-K scratch rows < query tokens; using 2D.")
         use_3d = False
 
+    gfx1100_head_size = triton.next_power_of_2(head_size)
+    if (
+        is_gfx1100
+        and use_3d
+        and gfx1100_head_size in _GFX1100_3D_CONFIGS
+        and q.element_size() == 2
+        and not use_td
+        and not is_batch_invariant
+    ):
+        fill = num_seqs * num_kv_heads
+        sw_2d_fill = _GFX1100_SW_2D_MIN_FILL.get(gfx1100_head_size)
+        if (
+            sliding_window_val > 0
+            and max_seqlen_q == 1
+            and sw_2d_fill is not None
+            and fill >= sw_2d_fill
+        ):
+            use_3d = False
+        elif sliding_window_val == 0 or sliding_window_val >= 512:
+            target, (tile, warps, stages) = _GFX1100_3D_CONFIGS[gfx1100_head_size]
+            segments = triton.next_power_of_2(triton.cdiv(target, fill))
+            if sliding_window_val >= 512:
+                segments *= 8
+            segments = min(segments, 128)
+            # The scratch holds query tokens x segments rows per Q head.
+            max_rows = softmax_segm_max.numel() // num_query_heads
+            while segments > num_par_softmax_segments and q.shape[0] * segments > (
+                max_rows
+            ):
+                segments //= 2
+            if segments > num_par_softmax_segments:
+                num_par_softmax_segments = segments
+                TILE_SIZE_DECODE, launch_num_warps, launch_num_stages = (
+                    tile,
+                    warps,
+                    stages,
+                )
+
+    # gfx1100: tuned 2D launch. Applied after the 2D/3D choice, so it does not
+    # move the 3D threshold. Launch parameters do not change the result:
+    # sliding window, sinks, softcap and ALiBi are applied per element inside
+    # each tile. Skipped with tensor descriptors (TILE_SIZE was already clamped
+    # to the block size above).
+    gfx1100_head_size = triton.next_power_of_2(head_size)
+    if (
+        is_gfx1100
+        and not use_3d
+        and gfx1100_head_size in _GFX1100_2D_CONFIGS
+        and num_queries_per_kv <= 16
+        and q.element_size() == 2
+        and not use_td
+        and not is_batch_invariant
+    ):
+        if max_seqlen_q > 1:
+            band = 0 if max_seqlen_q <= 64 else (1 if max_seqlen_q < 4096 else 2)
+            cfg = _GFX1100_2D_CONFIGS[gfx1100_head_size][band]
+            if cfg is not None:
+                BLOCK_M, TILE_SIZE_PREFILL, launch_num_warps, launch_num_stages = cfg
+                BLOCK_Q = BLOCK_M // num_queries_per_kv
+                total_num_q_blocks = q.shape[0] // BLOCK_Q + num_seqs
+        elif gfx1100_head_size in _GFX1100_2D_DECODE_CONFIGS:
+            TILE_SIZE_PREFILL, launch_num_warps, launch_num_stages = (
+                _GFX1100_2D_DECODE_CONFIGS[gfx1100_head_size]
+            )
+            if kv_quant_mode == KVQuantMode.FP8_PER_TENSOR:
+                # an fp8 KV tile needs TILE_SIZE >= 32
+                TILE_SIZE_PREFILL = max(TILE_SIZE_PREFILL, 32)
+
     # The kernel signature is the same for 2D and 3D — only the launch
     # grid + a handful of constexpr toggles differ.  Per-token-head scale
     # caches and their strides are passed as ``None`` when the
@@ -1107,6 +1292,48 @@ def unified_attention(
         vs_blk = vs_slot = vs_head = None
         k_scale_ptr = None
         v_scale_ptr = None
+    # gfx1201: with few requests x KV heads, 16 split-KV segments leave most CUs
+    # idle (1 request x 2 KV heads = 32 programs on 32 CUs). Use the largest
+    # power of two <= max_segments / (requests x KV heads), keeping the same
+    # scratch as fewer rows x more segments. Up to 2x for one long request.
+    # At GQA >= 12 (head 128, 16-bit query, no window), 16 segments run faster
+    # with 2 warps.
+    # 3D sweep: no batch slower than 0.96x. Skipped for windows < 2048.
+    if (
+        is_gfx1201
+        and use_3d
+        and gfx1201_head_size in _GFX1201_3D_MAX_SEGMENTS
+        and (sliding_window_val == 0 or sliding_window_val >= 2048)
+        and not is_batch_invariant
+    ):
+        max_segments = _GFX1201_3D_MAX_SEGMENTS[gfx1201_head_size]
+        segments = num_par_softmax_segments
+        while segments * 2 * num_seqs * num_kv_heads <= max_segments:
+            segments *= 2
+        rows = softmax_segm_max.shape[0] * num_par_softmax_segments // segments
+        if segments > num_par_softmax_segments and rows >= q.shape[0]:
+            num_par_softmax_segments = segments
+            softmax_segm_output = softmax_segm_output.view(-1)[
+                : rows * num_query_heads * segments * head_size_padded
+            ].view(rows, num_query_heads, segments, head_size_padded)
+            softmax_segm_max = softmax_segm_max.view(-1)[
+                : rows * num_query_heads * segments
+            ].view(rows, num_query_heads, segments)
+            softmax_segm_expsum = softmax_segm_expsum.view(-1)[
+                : rows * num_query_heads * segments
+            ].view(rows, num_query_heads, segments)
+            # the reduce kernel splits segments by the same TILE_SIZE_DECODE
+            TILE_SIZE_DECODE, launch_num_warps, launch_num_stages = (
+                (32, 4, 2) if q.element_size() == 1 else (16, 4, 1)
+            )
+        elif (
+            num_queries_per_kv >= 12
+            and gfx1201_head_size == 128
+            and sliding_window_val == 0
+            and q.element_size() == 2
+        ):
+            TILE_SIZE_DECODE, launch_num_warps, launch_num_stages = 16, 2, 1
+
     # 3D needs real segm tensors; 2D never touches them.  Pass ``None`` in
     # 2D mode so Triton can skip materialising these pointer arguments.
     segm_output_ptr = softmax_segm_output if use_3d else None
@@ -1118,6 +1345,22 @@ def unified_attention(
     if not use_3d:
         grid = (total_num_q_blocks, num_kv_heads)
         tile_size = TILE_SIZE_PREFILL
+        # gfx1201 decode batches above the 3D threshold: a narrow KV tile is
+        # ~1.2x (head_dim 128), ~1.5x (256) and ~2.5x (512, with 8 warps)
+        # faster. Padded head size, as for the prefill configs above.
+        if (
+            is_gfx1201
+            and max_seqlen_q == 1
+            and gfx1201_head_size in _GFX1201_2D_DECODE_CONFIGS
+            and q.element_size() <= 2
+            and not is_batch_invariant
+        ):
+            tile_size, launch_num_warps, launch_num_stages = _GFX1201_2D_DECODE_CONFIGS[
+                gfx1201_head_size
+            ]
+            if q.element_size() == 1:
+                # fp8 P @ V dot needs TILE_SIZE >= 32
+                tile_size = max(tile_size, 32)
     else:
         grid = (total_num_q_blocks, num_kv_heads, num_par_softmax_segments)
         tile_size = TILE_SIZE_DECODE

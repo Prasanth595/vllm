@@ -10,7 +10,7 @@ use xgrammar_structural_tag::{
 
 use super::DeepSeekV41ToolParser;
 use crate::tool::test_utils::collect_stream;
-use crate::tool::{Tool, ToolParser};
+use crate::tool::{Tool, ToolParser, ToolParserError, ToolParserOutput};
 
 fn tools() -> Vec<Tool> {
     vec![Tool {
@@ -138,5 +138,92 @@ fn structural_tag_respects_parameter_schemas_and_strict() {
                 assert!(tag.to_json_string().unwrap().contains("deepseek_v4_1_xml"));
             }
         }
+    }
+}
+
+/// Feed `chunks`, then return the parsed output and the `finish()` result.
+fn parse_then_finish(
+    parser: &mut dyn ToolParser,
+    chunks: &[&str],
+) -> (ToolParserOutput, crate::tool::Result<ToolParserOutput>) {
+    let mut output = ToolParserOutput::default();
+    for chunk in chunks {
+        parser.parse_into(chunk, &mut output).unwrap();
+    }
+    let finished = parser.finish();
+    (output.coalesce(), finished)
+}
+
+#[test]
+fn spaced_dsml_reports_tool_call_cut_by_max_tokens() {
+    let wires = [
+        concat!(
+            "Checking.\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n",
+            "<｜DSML｜ parameter name=\"query\" string=\"true\">Paris is the ca",
+        ),
+        "Checking.\n\n<｜DSML｜ calls>\n<｜DSML｜ invo",
+        "Checking.\n\n<｜DSML｜ ca",
+        "Checking.\n\n<｜DS",
+    ];
+    for wire in wires {
+        for split in wire.char_indices().map(|(i, _)| i).chain(std::iter::once(wire.len())) {
+            let mut parser = DeepSeekV41ToolParser::create(&tools()).unwrap();
+            let (output, finished) =
+                parse_then_finish(parser.as_mut(), &[&wire[..split], &wire[split..]]);
+            assert_eq!(output.normal_text(), "Checking.", "{wire:?} split {split}");
+            assert!(output.calls().is_empty(), "{wire:?} split {split}");
+            assert!(
+                matches!(finished, Err(ToolParserError::IncompleteToolCall { .. })),
+                "{wire:?} split {split}"
+            );
+            let unfinished = parser.reset();
+            assert!(
+                unfinished.contains("<｜"),
+                "{wire:?} split {split}: {unfinished:?}"
+            );
+            assert!(
+                !unfinished.contains("Checking"),
+                "{wire:?} split {split}: {unfinished:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spaced_dsml_keeps_completed_call_before_truncated_one() {
+    let wire = concat!(
+        "\n\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"lookup\">\n",
+        "<｜DSML｜ parameter name=\"query\" string=\"true\">Paris</｜DSML｜ parameter>\n",
+        "</｜DSML｜ invoke>\n<｜DSML｜ invoke name=\"lookup\">\n",
+        "<｜DSML｜ parameter name=\"query\" string=\"true\">Tok",
+    );
+    for split in wire.char_indices().map(|(i, _)| i).chain(std::iter::once(wire.len())) {
+        let mut parser = DeepSeekV41ToolParser::create(&tools()).unwrap();
+        let (output, finished) =
+            parse_then_finish(parser.as_mut(), &[&wire[..split], &wire[split..]]);
+        let calls = output.calls();
+        assert_eq!(calls.len(), 1, "split {split}");
+        assert_eq!(calls[0].name.as_deref(), Some("lookup"), "split {split}");
+        assert_eq!(calls[0].arguments, r#"{"query":"Paris"}"#, "split {split}");
+        assert_eq!(output.normal_text(), "", "split {split}");
+        assert!(
+            matches!(finished, Err(ToolParserError::IncompleteToolCall { .. })),
+            "split {split}"
+        );
+        let unfinished = parser.reset();
+        assert!(
+            unfinished.contains("Tok") && !unfinished.contains("Paris"),
+            "split {split}: {unfinished:?}"
+        );
+    }
+}
+
+#[test]
+fn spaced_dsml_finish_keeps_ordinary_trailing_text() {
+    for wire in ["Done.\n\n", "a < b", "Use <｜User｜> tags"] {
+        let mut parser = DeepSeekV41ToolParser::create(&tools()).unwrap();
+        let output = collect_stream(parser.as_mut(), &[wire]);
+        assert_eq!(output.normal_text(), wire);
+        assert!(output.calls().is_empty());
     }
 }

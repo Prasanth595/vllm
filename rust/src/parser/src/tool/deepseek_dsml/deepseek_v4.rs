@@ -74,7 +74,7 @@ mod tests {
     use super::DeepSeekV4ToolParser;
     use crate::tool::test_utils::{collect_stream, test_tools};
     use crate::tool::tests::assert_tool_framing_preserves_body_whitespace;
-    use crate::tool::{ToolParser, ToolParserTestExt as _};
+    use crate::tool::{ToolParser, ToolParserError, ToolParserTestExt as _};
 
     fn build_tool_call(function_name: &str, params: &[(&str, &str)]) -> String {
         let params = params
@@ -168,6 +168,18 @@ mod tests {
             serde_json::from_str::<Value>(&output.calls()[0].arguments).unwrap(),
             json!({ "location": "Paris", "date": "tomorrow" })
         );
+    }
+
+    #[test]
+    fn deepseek_v4_reports_half_written_opener_at_finish() {
+        let mut parser = DeepSeekV4ToolParser::new(&test_tools());
+        let output = parser.parse_chunk("Checking.\n\n<｜DSML｜tool_ca").unwrap();
+
+        assert_eq!(output.normal_text(), "Checking.");
+        assert!(matches!(
+            parser.finish(),
+            Err(ToolParserError::IncompleteToolCall { .. })
+        ));
     }
 
     #[test]

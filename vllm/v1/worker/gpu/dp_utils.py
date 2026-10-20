@@ -123,10 +123,21 @@ def sync_cudagraph_and_dp_padding(
                     num_active_loras=num_active_loras,
                     num_ubatches=num_ubatches,
                 )
-                if 2 * int(num_tokens_across_dp.min()) < ubatch_desc.num_tokens:
-                    # If one rank has an empty second microbatch, run without
-                    # CUDA graphs.
-                    ubatch_desc = None
+                min_tokens = int(num_tokens_across_dp.min())
+                if min_tokens <= (
+                    ubatch_desc.num_tokens // num_ubatches * (num_ubatches - 1)
+                ):
+                    # Stage only when a rank would leave its last region empty.
+                    runner = cudagraph_manager.ubatch_runner
+                    can_stage = (
+                        runner is not None
+                        and runner.stage_real_tokens
+                        and ubatch_desc.cg_mode == CUDAGraphMode.FULL
+                        and synced_uniform_token_count == 1
+                        and min_tokens >= num_ubatches
+                    )
+                    if not can_stage:
+                        ubatch_desc = None
             if ubatch_desc is None:
                 ubatch_desc = BatchExecutionDescriptor(
                     cg_mode=CUDAGraphMode.NONE,

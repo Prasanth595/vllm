@@ -24,6 +24,7 @@ For pre-quantized checkpoints, vLLM will try to infer the quantization method fr
 ```python
 from vllm import LLM
 import torch
+
 # unsloth/tinyllama-bnb-4bit is a pre-quantized checkpoint.
 model_id = "unsloth/tinyllama-bnb-4bit"
 llm = LLM(
@@ -40,6 +41,7 @@ For inflight 4bit quantization with BitsAndBytes, you need to explicitly specify
 ```python
 from vllm import LLM
 import torch
+
 model_id = "huggyllama/llama-7b"
 llm = LLM(
     model=model_id,

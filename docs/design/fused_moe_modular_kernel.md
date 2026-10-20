@@ -97,9 +97,11 @@ It is sometimes efficient to perform TopK weight application and Reduction insid
 
 ```py
 class FusedMoEModularKernel:
-    def __init__(self,
-                 prepare_finalize: FusedMoEPrepareAndFinalizeModular,
-                 fused_experts: FusedMoEExpertsModular):
+    def __init__(
+        self,
+        prepare_finalize: FusedMoEPrepareAndFinalizeModular,
+        fused_experts: FusedMoEExpertsModular,
+    ):
 
         self.prepare_finalize = prepare_finalize
         self.fused_experts = fused_experts
@@ -108,7 +110,9 @@ class FusedMoEModularKernel:
 
         Aq, A_scale, _, _, _ = self.prepare_finalize.prepare(DP_A, ...)
 
-        workspace13_shape, workspace2_shape, _, _ = self.fused_experts.workspace_shapes(...)
+        workspace13_shape, workspace2_shape, _, _ = self.fused_experts.workspace_shapes(
+            ...
+        )
 
         # allocate workspaces
         workspace_13 = torch.empty(workspace13_shape, ...)
@@ -121,7 +125,7 @@ class FusedMoEModularKernel:
         # performs the TopK Weight Application and Reduction.
         war_impl = self.fused_experts.finalize_weight_and_reduce_impl()
 
-        output = self.prepare_finalize.finalize(fe_out, war_impl,...)
+        output = self.prepare_finalize.finalize(fe_out, war_impl, ...)
 
         return output
 ```

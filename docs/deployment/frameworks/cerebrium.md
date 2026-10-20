@@ -38,6 +38,7 @@ Next, let us add our code to handle inference for the LLM of your choice (`mistr
 
     llm = LLM(model="mistralai/Mistral-7B-Instruct-v0.1")
 
+
     def run(prompts: list[str], temperature: float = 0.8, top_p: float = 0.95):
 
         sampling_params = SamplingParams(temperature=temperature, top_p=top_p)

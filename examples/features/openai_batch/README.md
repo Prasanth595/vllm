@@ -150,6 +150,7 @@ Presigned urls can only be generated via the SDK. You can run the following pyth
 import boto3
 from botocore.exceptions import ClientError
 
+
 def generate_presigned_url(s3_client, client_method, method_parameters, expires_in):
     """
     Generate a presigned Amazon S3 URL that can be used to perform an action.

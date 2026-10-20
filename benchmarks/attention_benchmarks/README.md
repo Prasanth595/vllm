@@ -26,12 +26,13 @@ python benchmark.py \
 Express workloads concisely using query length and sequence length:
 
 ```python
-"q2k"              # 2048-token prefill (q_len=2048, seq_len=2048)
-"q1s1k"            # Decode: 1 token with 1K sequence
-"8q1s1k"           # 8 decode requests
-"q4s1k"            # 4-token extend (e.g., spec decode)
-"2q2k_32q1s1k"     # Mixed: 2 prefills + 32 decodes
-"16q4s1k"          # 16 spec decode (4 tokens each)
+"q2k"  # 2048-token prefill (q_len=2048, seq_len=2048)
+
+"q1s1k"  # Decode: 1 token with 1K sequence
+"8q1s1k"  # 8 decode requests
+"q4s1k"  # 4-token extend (e.g., spec decode)
+"2q2k_32q1s1k"  # Mixed: 2 prefills + 32 decodes
+"16q4s1k"  # 16 spec decode (4 tokens each)
 ```
 
 ### Grammar Rule

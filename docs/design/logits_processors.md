@@ -206,6 +206,7 @@ The previous sections alluded to the interfaces which vLLM logits processors mus
     @dataclass(frozen=True)
     class BatchUpdate:
         """Persistent batch state change info for logitsprocs"""
+
         batch_size: int  # Current num reqs in batch
 
         # Metadata for requests added to, removed from, and moved
@@ -221,10 +222,10 @@ The previous sections alluded to the interfaces which vLLM logits processors mus
 
 
     class LogitsProcessor(ABC):
-
         @abstractmethod
-        def __init__(self, vllm_config: "VllmConfig", device: torch.device,
-                    is_pin_memory: bool) -> None:
+        def __init__(
+            self, vllm_config: "VllmConfig", device: torch.device, is_pin_memory: bool
+        ) -> None:
             raise NotImplementedError
 
         @abstractmethod
@@ -262,7 +263,6 @@ The previous sections alluded to the interfaces which vLLM logits processors mus
             Raise ValueError for invalid ones.
             """
             return None
-
     ```
 
 A vLLM logits processor must subclass `LogitsProcessor` and define (at minimum) the following methods:

@@ -62,7 +62,7 @@ from vllm.config import CompilationConfig, PassConfig
 
 llm = LLM(
     model="...",
-    optimization_level=2, # Default optimization level
+    optimization_level=2,  # Default optimization level
     compilation_config=CompilationConfig(
         pass_config=PassConfig(
             fuse_norm_quant=True,

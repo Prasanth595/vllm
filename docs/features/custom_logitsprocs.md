@@ -140,8 +140,10 @@ See examples below:
 
     ``` python
     # Pass in FQCN
-    engine_args = AsyncEngineArgs(model="facebook/opt-125m",
-                                  logits_processors=["your.module.path:TargetTokenLogitsProcessor"])
+    engine_args = AsyncEngineArgs(
+        model="facebook/opt-125m",
+        logits_processors=["your.module.path:TargetTokenLogitsProcessor"],
+    )
     async_llm = AsyncLLM.from_engine_args(engine_args)
     ```
 
@@ -186,9 +188,11 @@ You can pass one or more custom logits processor class objects to the `LLM` and 
     # Define custom logits processor locally
     from vllm.v1.worker.gpu.sample.logits_processor import LogitsProcessor
 
+
     class TargetTokenLogitsProcessor(LogitsProcessor):
         # See TargetTokenLogitsProcessor implementation above
         ...
+
 
     # Pass class object to LLM constructor
     llm = LLM(
@@ -197,8 +201,9 @@ You can pass one or more custom logits processor class objects to the `LLM` and 
     )
 
     # Pass class object to AsyncLLM constructor
-    engine_args = AsyncEngineArgs(model="facebook/opt-125m",
-                                  logits_processors=[TargetTokenLogitsProcessor])
+    engine_args = AsyncEngineArgs(
+        model="facebook/opt-125m", logits_processors=[TargetTokenLogitsProcessor]
+    )
     async_llm = AsyncLLM.from_engine_args(engine_args)
     ```
 
@@ -237,19 +242,19 @@ The examples below show how a user would pass a custom argument (`target_token`)
 ??? code "Offline: configure custom logits processor for an `LLM` request"
 
     ``` python
-    outputs_logitproc = llm.generate("your prompt",
-                                     SamplingParams(...,
-                                        extra_args={"target_token": 67}))
+    outputs_logitproc = llm.generate(
+        "your prompt", SamplingParams(..., extra_args={"target_token": 67})
+    )
     ```
 
 ??? code "Offline: configure custom logits processor for an `AsyncLLM` request"
 
     ``` python
-    async for out in engine.generate(request_id="your request id",
-                                     prompt="your prompt",
-                                     sampling_params=SamplingParams(...,
-                                        extra_args={"target_token": 67})):
-
+    async for out in engine.generate(
+        request_id="your request id",
+        prompt="your prompt",
+        sampling_params=SamplingParams(..., extra_args={"target_token": 67}),
+    ):
         # Process async request outputs
         ...
     ```

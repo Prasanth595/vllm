@@ -26,7 +26,7 @@ You can configure how the quantization scales are computed in vLLM using three d
    All quantization scales are set to `1.0`.  
    _Configure with:_  
    ```python
-   kv_cache_dtype="fp8"
+   kv_cache_dtype = "fp8"
    ```
 
 2. **[Recommended] Calibration with a dataset (via llm-compressor):**  
@@ -120,9 +120,10 @@ from compressed_tensors.quantization import QuantizationScheme, QuantizationArgs
 MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 DATASET_ID = "HuggingFaceH4/ultrachat_200k"
 DATASET_SPLIT = "train_sft"
-STRATEGY = "tensor"       # or "attn_head"
-NUM_CALIB_SAMPLES = 512   # Good starting value
+STRATEGY = "tensor"  # or "attn_head"
+NUM_CALIB_SAMPLES = 512  # Good starting value
 MAX_SEQ_LEN = 2048
+
 
 # -----------------------------
 # Helpers
@@ -138,6 +139,7 @@ def process_and_tokenize(example, tokenizer: AutoTokenizer):
         add_special_tokens=False,
     )
 
+
 def build_recipe(strategy: str) -> QuantizationModifier:
     fp8_args = QuantizationArgs(num_bits=8, type="float", strategy=strategy)
     return QuantizationModifier(
@@ -147,8 +149,9 @@ def build_recipe(strategy: str) -> QuantizationModifier:
                 input_activations=fp8_args,
             )
         },
-        kv_cache_scheme=fp8_args,           # Quantize KV cache: k/v_scale
+        kv_cache_scheme=fp8_args,  # Quantize KV cache: k/v_scale
     )
+
 
 # -----------------------------
 # Main
@@ -175,6 +178,7 @@ def main():
     save_dir = f"{MODEL_ID.rstrip('/').split('/')[-1]}-kvattn-fp8-{STRATEGY}"
     model.save_pretrained(save_dir, save_compressed=True)
     tokenizer.save_pretrained(save_dir)
+
 
 if __name__ == "__main__":
     main()

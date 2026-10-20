@@ -57,7 +57,7 @@ bdb.BdbQuit
 One solution is using [forked-pdb](https://github.com/Lightning-AI/forked-pdb). Install with `pip install fpdb` and set a breakpoint with something like:
 
 ``` python
-__import__('fpdb').ForkedPdb().set_trace()
+__import__("fpdb").ForkedPdb().set_trace()
 ```
 
 Another option is to disable multiprocessing entirely, with the `VLLM_ENABLE_V1_MULTIPROCESSING` environment variable.
@@ -65,6 +65,7 @@ This keeps the scheduler in the same process, so you can use stock `pdb` breakpo
 
 ``` python
 import os
+
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 ```
 
@@ -90,10 +91,16 @@ If GPU/CPU communication cannot be established, you can use the following Python
     # Test PyTorch NCCL
     import torch
     import torch.distributed as dist
+
     dist.init_process_group(backend="nccl")
     local_rank = dist.get_rank() % torch.accelerator.device_count()
     torch.accelerator.set_device_index(local_rank)
-    data = torch.FloatTensor([1,] * 128).to("cuda")
+    data = torch.FloatTensor(
+        [
+            1,
+        ]
+        * 128
+    ).to("cuda")
     dist.all_reduce(data, op=dist.ReduceOp.SUM)
     torch.accelerator.synchronize()
     value = data.mean().item()
@@ -104,7 +111,12 @@ If GPU/CPU communication cannot be established, you can use the following Python
 
     # Test PyTorch GLOO
     gloo_group = dist.new_group(ranks=list(range(world_size)), backend="gloo")
-    cpu_data = torch.FloatTensor([1,] * 128)
+    cpu_data = torch.FloatTensor(
+        [
+            1,
+        ]
+        * 128
+    )
     dist.all_reduce(cpu_data, op=dist.ReduceOp.SUM, group=gloo_group)
     value = cpu_data.mean().item()
     assert value == world_size, f"Expected {world_size}, got {value}"
@@ -224,7 +236,7 @@ llm = vllm.LLM(...)
 try this instead:
 
 ```python
-if __name__ == '__main__':
+if __name__ == "__main__":
     import vllm
 
     llm = vllm.LLM(...)
@@ -239,6 +251,7 @@ vLLM heavily depends on `torch.compile` to optimize the model for better perform
     ```python
     import torch
 
+
     @torch.compile
     def f(x):
         # a simple function to test torch.compile
@@ -246,6 +259,7 @@ vLLM heavily depends on `torch.compile` to optimize the model for better perform
         x = x * 2
         x = x.sin()
         return x
+
 
     x = torch.randn(4, 4).cuda()
     print(f(x))

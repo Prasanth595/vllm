@@ -34,13 +34,13 @@ pip install vllm litellm
 ??? code
 
     ```python
-    import litellm 
+    import litellm
 
     messages = [{"content": "Hello, how are you?", "role": "user"}]
 
     # hosted_vllm is prefix key word and necessary
     response = litellm.completion(
-        model="hosted_vllm/qwen/Qwen1.5-0.5B-Chat", # pass the vllm model name
+        model="hosted_vllm/qwen/Qwen1.5-0.5B-Chat",  # pass the vllm model name
         messages=messages,
         api_base="http://{your-vllm-server-host}:{your-vllm-server-port}/v1",
         temperature=0.2,
@@ -61,10 +61,12 @@ pip install vllm litellm
 1. Call it with litellm:
 
 ```python
-from litellm import embedding   
+from litellm import embedding
 import os
 
-os.environ["HOSTED_VLLM_API_BASE"] = "http://{your-vllm-server-host}:{your-vllm-server-port}/v1"
+os.environ["HOSTED_VLLM_API_BASE"] = (
+    "http://{your-vllm-server-host}:{your-vllm-server-port}/v1"
+)
 
 # hosted_vllm is prefix key word and necessary
 # pass the vllm model name

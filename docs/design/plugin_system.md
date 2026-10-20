@@ -16,13 +16,15 @@ vLLM's plugin system uses the standard Python `entry_points` mechanism. This mec
     # inside `setup.py` file
     from setuptools import setup
 
-    setup(name='vllm_add_dummy_model',
-        version='0.1',
-        packages=['vllm_add_dummy_model'],
+    setup(
+        name="vllm_add_dummy_model",
+        version="0.1",
+        packages=["vllm_add_dummy_model"],
         entry_points={
-            'vllm.general_plugins':
-            ["register_dummy_model = vllm_add_dummy_model:register"]
-        })
+            "vllm.general_plugins": ["register_dummy_model = vllm_add_dummy_model:register"]
+        },
+    )
+
 
     # inside `vllm_add_dummy_model/__init__.py` file
     def register():

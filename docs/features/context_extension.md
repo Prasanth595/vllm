@@ -37,18 +37,18 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="token-abc123"  # Dummy API key, required by the client
+    api_key="token-abc123",  # Dummy API key, required by the client
 )
 
 response = client.chat.completions.create(
     model="Qwen/Qwen3-0.6B",
     messages=[
         {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello"}
+        {"role": "user", "content": "Hello"},
     ],
     max_tokens=128,
     temperature=0.8,
-    top_p=0.95
+    top_p=0.95,
 )
 
 print(response.choices[0].message.content)

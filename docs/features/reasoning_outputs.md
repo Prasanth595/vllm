@@ -146,9 +146,7 @@ OpenAI Python client library does not officially support `reasoning` attribute f
     for chunk in stream:
         # Safely extract reasoning and content from delta,
         # defaulting to None if attributes don't exist or are empty strings
-        reasoning = (
-            getattr(chunk.choices[0].delta, "reasoning", None) or None
-        )
+        reasoning = getattr(chunk.choices[0].delta, "reasoning", None) or None
         content = getattr(chunk.choices[0].delta, "content", None) or None
 
         if reasoning is not None:
@@ -186,11 +184,14 @@ The reasoning content is also available when both tool calling and the reasoning
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "location": {"type": "string", "description": "City and state, e.g., 'San Francisco, CA'"},
+                        "location": {
+                            "type": "string",
+                            "description": "City and state, e.g., 'San Francisco, CA'",
+                        },
                         "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
                     },
                     "required": ["location", "unit"],
-                }
+                },
             },
         }
     ]
@@ -244,7 +245,9 @@ Request-level `chat_template_kwargs` always take priority over server defaults. 
 response = client.chat.completions.create(
     model=model,
     messages=messages,
-    extra_body={"chat_template_kwargs": {"enable_thinking": True}}  # Overrides server default
+    extra_body={
+        "chat_template_kwargs": {"enable_thinking": True}
+    },  # Overrides server default
 )
 ```
 
@@ -436,6 +439,7 @@ You can add a new `ReasoningParser` similar to [vllm/reasoning/deepseek_r1_reaso
     from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
     from vllm.entrypoints.openai.engine.protocol import DeltaMessage
 
+
     # define a reasoning parser and register it to vllm
     # the name list in register_module can be used
     # in --reasoning-parser.
@@ -482,6 +486,8 @@ You can add a new `ReasoningParser` similar to [vllm/reasoning/deepseek_r1_reaso
             tuple[Optional[str], Optional[str]]
                 A tuple containing the reasoning content and the content.
             """
+
+
     # Register the reasoning parser
     ReasoningParserManager.register_lazy_module(
         name="example",
@@ -500,6 +506,7 @@ Additionally, to enable structured output, you'll need to create a new `Reasoner
         """
         Reasoner for DeepSeek R series models.
         """
+
         start_token_id: int
         end_token_id: int
 
@@ -516,8 +523,11 @@ Additionally, to enable structured output, you'll need to create a new `Reasoner
         def is_reasoning_end(self, input_ids: list[int]) -> bool:
             return self.end_token_id in input_ids
 
-        def is_reasoning_end_streaming(self, input_ids: list[int], delta_ids: list[int]) -> bool:
+        def is_reasoning_end_streaming(
+            self, input_ids: list[int], delta_ids: list[int]
+        ) -> bool:
             return self.end_token_id in delta_token_ids
+
         ...
     ```
 

@@ -179,6 +179,7 @@ Alternatively, follow these example steps to implement your own plugin:
         from vllm.lora.request import LoRARequest
         from vllm.lora.resolver import LoRAResolver
 
+
         class S3LoRAResolver(LoRAResolver):
             def __init__(self):
                 self.s3 = s3fs.S3FileSystem()
@@ -186,13 +187,15 @@ Alternatively, follow these example steps to implement your own plugin:
                 self.local_path_format = os.getenv("LOCAL_PATH_TEMPLATE")
 
             async def resolve_lora(self, base_model_name, lora_name):
-                s3_path = self.s3_path_format.format(base_model_name=base_model_name, lora_name=lora_name)
-                local_path = self.local_path_format.format(base_model_name=base_model_name, lora_name=lora_name)
+                s3_path = self.s3_path_format.format(
+                    base_model_name=base_model_name, lora_name=lora_name
+                )
+                local_path = self.local_path_format.format(
+                    base_model_name=base_model_name, lora_name=lora_name
+                )
 
                 # Download the LoRA from S3 to the local path
-                await self.s3._get(
-                    s3_path, local_path, recursive=True, maxdepth=1
-                )
+                await self.s3._get(s3_path, local_path, recursive=True, maxdepth=1)
 
                 lora_request = LoRARequest(
                     lora_name=lora_name,
@@ -369,6 +372,7 @@ To this end, we allow registration of default multimodal LoRAs to handle this au
     model_id = "ibm-granite/granite-speech-3.3-2b"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+
     def get_prompt(question: str, has_audio: bool):
         """Build the input prompt to send to vLLM."""
         if has_audio:
@@ -387,7 +391,7 @@ To this end, we allow registration of default multimodal LoRAs to handle this au
         limit_mm_per_prompt={"audio": 1},
         # Will always pass a `LoRARequest` with the `model_id`
         # whenever audio is contained in the request data.
-        default_mm_loras = {"audio": model_id},
+        default_mm_loras={"audio": model_id},
         enforce_eager=True,
     )
 
@@ -402,7 +406,7 @@ To this end, we allow registration of default multimodal LoRAs to handle this au
         "prompt": prompt_with_audio,
         "multi_modal_data": {
             "audio": audio,
-        }
+        },
     }
 
 

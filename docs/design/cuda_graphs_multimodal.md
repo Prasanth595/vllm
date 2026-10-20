@@ -65,8 +65,10 @@ class BudgetGraphMetadata:
     max_batch_size: int
     max_frames_per_batch: int
     graph: torch.cuda.CUDAGraph
-    input_buffers: dict[str, torch.Tensor]  # e.g. pixel_values, embeddings, seq metadata
-    output_buffer: torch.Tensor      # encoder hidden states
+    input_buffers: dict[
+        str, torch.Tensor
+    ]  # e.g. pixel_values, embeddings, seq metadata
+    output_buffer: torch.Tensor  # encoder hidden states
 ```
 
 Budgets are auto-generated as power-of-2 levels from a model-provided range via `get_encoder_cudagraph_budget_range()`, with the maximum budget always included even if it does not fall on a power-of-2 boundary. Budgets can also be explicitly specified by the user via `encoder_cudagraph_token_budgets` in `CompilationConfig`.

@@ -36,6 +36,7 @@ For multi-GPU inference, set `tensor_parallel_size` in the `LLM` class to the de
 
 ```python
 from vllm import LLM
+
 llm = LLM("facebook/opt-13b", tensor_parallel_size=4)
 output = llm.generate("San Francisco is a")
 ```

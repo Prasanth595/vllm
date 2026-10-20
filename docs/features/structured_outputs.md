@@ -45,6 +45,7 @@ Now let's see an example for each of the cases, starting with the `choice`, as i
 
     ```python
     from openai import OpenAI
+
     client = OpenAI(
         base_url="http://localhost:8000/v1",
         api_key="-",
@@ -93,16 +94,19 @@ The next example shows how to use the `response_format` parameter with a Pydanti
     from pydantic import BaseModel
     from enum import Enum
 
+
     class CarType(str, Enum):
         sedan = "sedan"
         suv = "SUV"
         truck = "Truck"
         coupe = "Coupe"
 
+
     class CarDescription(BaseModel):
         brand: str
         model: str
         car_type: CarType
+
 
     json_schema = CarDescription.model_json_schema()
 
@@ -118,7 +122,7 @@ The next example shows how to use the `response_format` parameter with a Pydanti
             "type": "json_schema",
             "json_schema": {
                 "name": "car-description",
-                "schema": CarDescription.model_json_schema()
+                "schema": CarDescription.model_json_schema(),
             },
         },
     )
@@ -198,10 +202,7 @@ Note that you can use reasoning with any provided structured outputs feature. Th
         ],
         response_format={
             "type": "json_schema",
-            "json_schema": {
-                "name": "people",
-                "schema": People.model_json_schema()
-            }
+            "json_schema": {"name": "people", "schema": People.model_json_schema()},
         },
     )
     print("reasoning: ", completion.choices[0].message.reasoning)
@@ -280,9 +281,11 @@ Here is a simple example demonstrating how to get structured output using Pydant
     from pydantic import BaseModel
     from openai import OpenAI
 
+
     class Info(BaseModel):
         name: str
         age: int
+
 
     client = OpenAI(base_url="http://0.0.0.0:8000/v1", api_key="dummy")
     model = client.models.list().data[0].id
@@ -290,7 +293,10 @@ Here is a simple example demonstrating how to get structured output using Pydant
         model=model,
         messages=[
             {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "My name is Cameron, I'm 28. What's my name and age?"},
+            {
+                "role": "user",
+                "content": "My name is Cameron, I'm 28. What's my name and age?",
+            },
         ],
         response_format=Info,
     )
@@ -317,13 +323,16 @@ Here is a more complex example using nested Pydantic models to handle a step-by-
     from pydantic import BaseModel
     from openai import OpenAI
 
+
     class Step(BaseModel):
         explanation: str
         output: str
 
+
     class MathResponse(BaseModel):
         steps: list[Step]
         final_answer: str
+
 
     completion = client.beta.chat.completions.parse(
         model=model,

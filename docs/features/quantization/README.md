@@ -110,6 +110,7 @@ from vllm.model_executor.layers.quantization.base_config import (
 from vllm.model_executor.layers.linear import LinearBase
 from vllm.model_executor.layers.fused_moe import FusedMoE
 
+
 @register_quantization_config("my_quant")
 class MyQuantConfig(QuantizationConfig):
     """Custom quantization config."""
@@ -167,6 +168,7 @@ For linear layers, return a `QuantizeMethodBase` subclass from `get_quant_method
 ```python
 from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 
+
 class MyQuantLinearMethod(UnquantizedLinearMethod):
     """Custom quantization method for linear layers."""
 
@@ -196,6 +198,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe_method_base import (
     FusedMoEMethodBase,
 )
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
+
 
 class MyQuantMoEMethod(FusedMoEMethodBase):
     """Custom quantization method for MoE layers."""

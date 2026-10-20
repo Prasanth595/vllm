@@ -296,9 +296,11 @@ Equivalent in the offline API:
 
 ```python
 import os
+
 os.environ["VLLM_USE_FASTOKENS"] = "1"
 
 from vllm import LLM
+
 llm = LLM(model="Qwen/Qwen3-8B")
 ```
 

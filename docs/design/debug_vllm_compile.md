@@ -104,6 +104,7 @@ vllm serve -cc.mode=0
 ```py
 # Offline
 from vllm.config.compilation import CompilationConfig, CompilationMode
+
 LLM(model, compilation_config=CompilationConfig(mode=CompilationMode.NONE))
 ```
 
@@ -117,6 +118,7 @@ vllm serve -cc.cudagraph_mode=NONE
 ```py
 # Offline
 from vllm.config.compilation import CompilationConfig, CUDAGraphMode
+
 LLM(model, compilation_config=CompilationConfig(cudagraph_mode=CUDAGraphMode.NONE))
 ```
 
@@ -132,6 +134,7 @@ vllm serve -cc.ir_enable_torch_wrap=False
 ```py
 # Offline
 from vllm.config.compilation import CompilationConfig
+
 LLM(model, compilation_config=CompilationConfig(ir_enable_torch_wrap=False))
 ```
 
@@ -214,16 +217,34 @@ vllm serve meta-llama/Llama-3.2-1B -cc.dynamic_shapes_config.type=backed_size_ob
 
 ```py
 # Offline - using unbacked mode
-from vllm.config.compilation import CompilationConfig, DynamicShapesConfig, DynamicShapesType
-LLM(model, compilation_config=CompilationConfig(
-    dynamic_shapes_config=DynamicShapesConfig(type=DynamicShapesType.UNBACKED)
-))
+from vllm.config.compilation import (
+    CompilationConfig,
+    DynamicShapesConfig,
+    DynamicShapesType,
+)
+
+LLM(
+    model,
+    compilation_config=CompilationConfig(
+        dynamic_shapes_config=DynamicShapesConfig(type=DynamicShapesType.UNBACKED)
+    ),
+)
 
 # Offline - using backed_size_oblivious mode
-from vllm.config.compilation import CompilationConfig, DynamicShapesConfig, DynamicShapesType
-LLM(model, compilation_config=CompilationConfig(
-    dynamic_shapes_config=DynamicShapesConfig(type=DynamicShapesType.BACKED_SIZE_OBLIVIOUS)
-))
+from vllm.config.compilation import (
+    CompilationConfig,
+    DynamicShapesConfig,
+    DynamicShapesType,
+)
+
+LLM(
+    model,
+    compilation_config=CompilationConfig(
+        dynamic_shapes_config=DynamicShapesConfig(
+            type=DynamicShapesType.BACKED_SIZE_OBLIVIOUS
+        )
+    ),
+)
 ```
 
 These modes are stricter and reduce or eliminate the need of dynamic shapes guarding, which can help isolate issues:
@@ -293,7 +314,7 @@ vllm serve -cc.backend=eager
 
 ```py
 # offline
-LLM(compilation_config=CompilationConfig(backend='eager'))
+LLM(compilation_config=CompilationConfig(backend="eager"))
 ```
 
 If Inductor is at fault, [file a bug to PyTorch](https://github.com/pytorch/pytorch).
@@ -369,5 +390,6 @@ vllm serve -cc.cudagraph_mode=NONE
 ```py
 # Offline
 from vllm.config.compilation import CompilationConfig, CUDAGraphMode
+
 LLM(model, compilation_config=CompilationConfig(cudagraph_mode=CUDAGraphMode.NONE))
 ```

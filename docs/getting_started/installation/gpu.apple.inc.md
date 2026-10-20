@@ -84,12 +84,12 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
-    api_key="dummy"  # No auth required for local server
+    api_key="dummy",  # No auth required for local server
 )
 
 response = client.chat.completions.create(
     model="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-    messages=[{"role": "user", "content": "Hello!"}]
+    messages=[{"role": "user", "content": "Hello!"}],
 )
 
 print(response.choices[0].message.content)

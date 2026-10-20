@@ -23,8 +23,11 @@ Next, make a request that triggers the model to use the available tools:
 
     client = OpenAI(base_url="http://localhost:8000/v1", api_key="dummy")
 
+
     def get_weather(location: str, unit: str):
         return f"Getting the weather for {location} in {unit}..."
+
+
     tool_functions = {"get_weather": get_weather}
 
     tools = [
@@ -36,8 +39,11 @@ Next, make a request that triggers the model to use the available tools:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "location": {"type": "string", "description": "City and state, e.g., 'San Francisco, CA'"},
-                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}
+                        "location": {
+                            "type": "string",
+                            "description": "City and state, e.g., 'San Francisco, CA'",
+                        },
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
                     },
                     "required": ["location", "unit"],
                 },
@@ -597,7 +603,10 @@ A growing number of models output a python list to represent tool calls instead 
 As a concrete example, these models may look up the weather in San Francisco and Seattle by generating:
 
 ```python
-[get_weather(city='San Francisco', metric='celsius'), get_weather(city='Seattle', metric='celsius')]
+[
+    get_weather(city="San Francisco", metric="celsius"),
+    get_weather(city="Seattle", metric="celsius"),
+]
 ```
 
 Limitations:
@@ -635,7 +644,6 @@ Here is a summary of a plugin file:
 ??? code
 
     ```python
-
     # import the required packages
 
     # define a tool parser and register it to vllm
@@ -648,7 +656,9 @@ Here is a summary of a plugin file:
 
         # adjust request. e.g.: set skip special tokens
         # to False for tool call output.
-        def adjust_request(self, request: ChatCompletionRequest | ResponsesRequest) -> ChatCompletionRequest | ResponsesRequest:
+        def adjust_request(
+            self, request: ChatCompletionRequest | ResponsesRequest
+        ) -> ChatCompletionRequest | ResponsesRequest:
             return request
 
         # implement the tool call parse for stream call
@@ -670,16 +680,17 @@ Here is a summary of a plugin file:
             model_output: str,
             request: ChatCompletionRequest,
         ) -> ExtractedToolCallInformation:
-            return ExtractedToolCallInformation(tools_called=False,
-                                                tool_calls=[],
-                                                content=text)
+            return ExtractedToolCallInformation(
+                tools_called=False, tool_calls=[], content=text
+            )
+
+
     # register the tool parser to ToolParserManager
     ToolParserManager.register_lazy_module(
         name="example",
         module_path="vllm.tool_parsers.example",
         class_name="ExampleToolParser",
     )
-
     ```
 
 Then you can use this plugin in the command line like this.

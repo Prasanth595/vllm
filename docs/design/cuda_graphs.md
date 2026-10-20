@@ -104,15 +104,15 @@ The dispatching keys are initialized through the dispatcher's `initialize_cudagr
 The dispatch code looks like:
 
 ```python
-batch_descriptor=BatchDescriptor(num_tokens=num_input_tokens, uniform_decode=...)
+batch_descriptor = BatchDescriptor(num_tokens=num_input_tokens, uniform_decode=...)
 runtime_mode, batch_descriptor = cudagraphdispatcher.dispatch(batch_descriptor)
 # execution
 with set_forward_context(
-    ..., 
-    cudagraph_runtime_mode=runtime_mode, 
+    ...,
+    cudagraph_runtime_mode=runtime_mode,
     batch_descriptor=batch_descriptor,
 ):
-     output = self.model(...)
+    output = self.model(...)
 ```
 
 Inside the `dispatch()` method, the dispatcher will search the proper CUDA Graphs runtime mode and existing dispatching keys for a return. We basically search the existing keys following the priority: `FULL`>`PIECEWISE`>`None`. If the dispatching key does not exist, default to return `NONE` mode for eager execution. The implementations can be found [here](https://github.com/vllm-project/vllm/blob/main/vllm/v1/cudagraph_dispatcher.py#L91).
@@ -200,6 +200,7 @@ vllm serve --model meta-llama/Llama-3.1-8B-Instruct --compilation-config '{"cuda
 
 ```python
 import os
+
 os.environ.setdefault("VLLM_LOGGING_LEVEL", "DEBUG")
 
 import vllm

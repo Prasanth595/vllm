@@ -83,8 +83,8 @@ Using token classification models as reward models. For details on reward models
 The following [pooling parameters][vllm.PoolingParams] are supported.
 
 ```python
---8<-- "vllm/pooling_params.py:common-pooling-params"
---8<-- "vllm/pooling_params.py:classify-pooling-params"
+--8 < --"vllm/pooling_params.py:common-pooling-params"
+--8 < --"vllm/pooling_params.py:classify-pooling-params"
 ```
 
 ### `LLM.encode`

@@ -51,128 +51,127 @@ For example:
 **1. Attention:**
 
 ```python
---8<-- "vllm/model_executor/layers/mla.py:multi_head_latent_attention"
-
+--8 < --"vllm/model_executor/layers/mla.py:multi_head_latent_attention"
 ```
 
 **2. Activation:**
 
 ```python
---8<-- "vllm/model_executor/layers/activation.py:silu_and_mul"
+--8 < --"vllm/model_executor/layers/activation.py:silu_and_mul"
 
---8<-- "vllm/model_executor/layers/activation.py:mul_and_silu"
+--8 < --"vllm/model_executor/layers/activation.py:mul_and_silu"
 
---8<-- "vllm/model_executor/layers/activation.py:gelu_new"
+--8 < --"vllm/model_executor/layers/activation.py:gelu_new"
 
---8<-- "vllm/model_executor/layers/activation.py:gelu_fast"
+--8 < --"vllm/model_executor/layers/activation.py:gelu_fast"
 
---8<-- "vllm/model_executor/layers/activation.py:quick_gelu"
+--8 < --"vllm/model_executor/layers/activation.py:quick_gelu"
 
---8<-- "vllm/model_executor/layers/activation.py:gelu_and_mul"
+--8 < --"vllm/model_executor/layers/activation.py:gelu_and_mul"
 
---8<-- "vllm/model_executor/layers/activation.py:gelu_and_mul_sparse"
+--8 < --"vllm/model_executor/layers/activation.py:gelu_and_mul_sparse"
 
---8<-- "vllm/model_executor/layers/activation.py:relu2"
+--8 < --"vllm/model_executor/layers/activation.py:relu2"
 
---8<-- "vllm/model_executor/layers/activation.py:xielu"
+--8 < --"vllm/model_executor/layers/activation.py:xielu"
 
---8<-- "vllm/model_executor/layers/activation.py:swigluoai_and_mul"
+--8 < --"vllm/model_executor/layers/activation.py:swigluoai_and_mul"
 
---8<-- "vllm/model_executor/layers/activation.py:fatrelu_and_mul"
+--8 < --"vllm/model_executor/layers/activation.py:fatrelu_and_mul"
 ```
 
 **3. MM-Conv:**
 
 ```python
---8<-- "vllm/model_executor/layers/conv.py:conv2d"
+--8 < --"vllm/model_executor/layers/conv.py:conv2d"
 
---8<-- "vllm/model_executor/layers/conv.py:conv3d"
+--8 < --"vllm/model_executor/layers/conv.py:conv3d"
 ```
 
 **4. Embedding:**
 
 ```python
---8<-- "vllm/model_executor/layers/vocab_parallel_embedding.py:vocab_parallel_embedding"
+--8 < --"vllm/model_executor/layers/vocab_parallel_embedding.py:vocab_parallel_embedding"
 
---8<-- "vllm/model_executor/layers/vocab_parallel_embedding.py:parallel_lm_head"
+--8 < --"vllm/model_executor/layers/vocab_parallel_embedding.py:parallel_lm_head"
 ```
 
 **5. Linear:**
 
 ```python
---8<-- "vllm/model_executor/layers/linear.py:row_parallel_linear"
+--8 < --"vllm/model_executor/layers/linear.py:row_parallel_linear"
 
---8<-- "vllm/model_executor/layers/linear.py:column_parallel_linear"
+--8 < --"vllm/model_executor/layers/linear.py:column_parallel_linear"
 
---8<-- "vllm/model_executor/layers/linear.py:replicated_linear"
+--8 < --"vllm/model_executor/layers/linear.py:replicated_linear"
 ```
 
 **6. Logits Processor:**
 
 ```python
---8<-- "vllm/model_executor/layers/logits_processor.py:logits_processor"
+--8 < --"vllm/model_executor/layers/logits_processor.py:logits_processor"
 ```
 
 **7. Mamba:**
 
 ```python
---8<-- "vllm/model_executor/layers/mamba/mamba_mixer.py:mamba_mixer"
+--8 < --"vllm/model_executor/layers/mamba/mamba_mixer.py:mamba_mixer"
 
---8<-- "vllm/model_executor/layers/mamba/mamba_mixer2.py:mamba_mixer2"
+--8 < --"vllm/model_executor/layers/mamba/mamba_mixer2.py:mamba_mixer2"
 
---8<-- "vllm/model_executor/layers/mamba/mamba_mixer2.py:mixer2_gated_rms_norm"
+--8 < --"vllm/model_executor/layers/mamba/mamba_mixer2.py:mixer2_gated_rms_norm"
 
---8<-- "vllm/model_executor/layers/mamba/short_conv.py:short_conv"
+--8 < --"vllm/model_executor/layers/mamba/short_conv.py:short_conv"
 ```
 
 **8. MoE:**
 
 ```python
---8<-- "vllm/model_executor/layers/fused_moe/layer.py:fused_moe"
+--8 < --"vllm/model_executor/layers/fused_moe/layer.py:fused_moe"
 
---8<-- "vllm/model_executor/layers/fused_moe/fused_moe_modular_method.py:modular_fused_moe"
+--8 < --"vllm/model_executor/layers/fused_moe/fused_moe_modular_method.py:modular_fused_moe"
 
---8<-- "vllm/model_executor/layers/fused_moe/unquantized_fused_moe_method.py:unquantized_fused_moe"
+--8 < --"vllm/model_executor/layers/fused_moe/unquantized_fused_moe_method.py:unquantized_fused_moe"
 
---8<-- "vllm/model_executor/models/transformers/moe.py:transformers_fused_moe"
+--8 < --"vllm/model_executor/models/transformers/moe.py:transformers_fused_moe"
 
---8<-- "vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:grouped_topk"
+--8 < --"vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py:grouped_topk"
 ```
 
 **9. Norm:**
 
 ```python
---8<-- "vllm/model_executor/layers/layernorm.py:rms_norm"
+--8 < --"vllm/model_executor/layers/layernorm.py:rms_norm"
 
---8<-- "vllm/model_executor/layers/layernorm.py:rms_norm_gated"
+--8 < --"vllm/model_executor/layers/layernorm.py:rms_norm_gated"
 
---8<-- "vllm/model_executor/layers/layernorm.py:gemma_rms_norm"
+--8 < --"vllm/model_executor/layers/layernorm.py:gemma_rms_norm"
 ```
 
 **10. Quantization:**
 
 ```python
---8<-- "vllm/model_executor/layers/quantization/input_quant_fp8.py:quant_fp8"
+--8 < --"vllm/model_executor/layers/quantization/input_quant_fp8.py:quant_fp8"
 ```
 
 **11. Rope:**
 
 ```python
---8<-- "vllm/model_executor/layers/rotary_embedding/base.py:rotary_embedding"
+--8 < --"vllm/model_executor/layers/rotary_embedding/base.py:rotary_embedding"
 
---8<-- "vllm/model_executor/layers/rotary_embedding/dual_chunk_rope.py:dual_chunk_rotary_embedding"
+--8 < --"vllm/model_executor/layers/rotary_embedding/dual_chunk_rope.py:dual_chunk_rotary_embedding"
 
---8<-- "vllm/model_executor/layers/rotary_embedding/common.py:apply_rotary_emb"
+--8 < --"vllm/model_executor/layers/rotary_embedding/common.py:apply_rotary_emb"
 ```
 
 **12. Encoder:**
 
 ```python
---8<-- "vllm/model_executor/models/deepencoder2.py:qwen2_decoder"
+--8 < --"vllm/model_executor/models/deepencoder2.py:qwen2_decoder"
 
---8<-- "vllm/model_executor/layers/attention/mm_encoder_attention.py:mm_encoder_attn"
+--8 < --"vllm/model_executor/layers/attention/mm_encoder_attention.py:mm_encoder_attn"
 
---8<-- "vllm/model_executor/models/deepencoder.py:rel_pos_attention"
+--8 < --"vllm/model_executor/models/deepencoder.py:rel_pos_attention"
 ```
 
 ## Guidelines for Implementing a New CustomOp

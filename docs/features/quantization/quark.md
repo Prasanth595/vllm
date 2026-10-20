@@ -85,7 +85,7 @@ to [Adding Calibration Datasets](https://quark.docs.amd.com/latest/pytorch/calib
         max_length=MAX_SEQ_LEN,
     )
     calib_dataloader = DataLoader(
-        tokenized_outputs['input_ids'],
+        tokenized_outputs["input_ids"],
         batch_size=BATCH_SIZE,
         drop_last=True,
     )
@@ -108,9 +108,12 @@ kv-cache and the quantization algorithm is AutoSmoothQuant.
 ??? code
 
     ```python
-    from quark.torch.quantization import (Config, QuantizationConfig,
-                                        FP8E4M3PerTensorSpec,
-                                        load_quant_algo_config_from_file)
+    from quark.torch.quantization import (
+        Config,
+        QuantizationConfig,
+        FP8E4M3PerTensorSpec,
+        load_quant_algo_config_from_file,
+    )
 
     # Define fp8/per-tensor/static spec.
     FP8_PER_TENSOR_SPEC = FP8E4M3PerTensorSpec(
@@ -138,7 +141,9 @@ kv-cache and the quantization algorithm is AutoSmoothQuant.
     layer_quant_config = kv_cache_quant_config.copy()
 
     # Define algorithm config by config file.
-    LLAMA_AUTOSMOOTHQUANT_CONFIG_FILE = "examples/torch/language_modeling/llm_ptq/models/llama/autosmoothquant_config.json"
+    LLAMA_AUTOSMOOTHQUANT_CONFIG_FILE = (
+        "examples/torch/language_modeling/llm_ptq/models/llama/autosmoothquant_config.json"
+    )
     algo_config = load_quant_algo_config_from_file(LLAMA_AUTOSMOOTHQUANT_CONFIG_FILE)
 
     EXCLUDE_LAYERS = ["lm_head"]
@@ -179,7 +184,9 @@ for more exporting format details.
     export_config.json_export_config.kv_cache_group = LLAMA_KV_CACHE_GROUP
 
     # Model: Llama-2-70b-chat-hf-w-fp8-a-fp8-kvcache-fp8-pertensor-autosmoothquant
-    EXPORT_DIR = MODEL_ID.split("/")[1] + "-w-fp8-a-fp8-kvcache-fp8-pertensor-autosmoothquant"
+    EXPORT_DIR = (
+        MODEL_ID.split("/")[1] + "-w-fp8-a-fp8-kvcache-fp8-pertensor-autosmoothquant"
+    )
     exporter = ModelExporter(config=export_config, export_dir=EXPORT_DIR)
     with torch.no_grad():
         exporter.export_safetensors_model(
@@ -363,7 +370,9 @@ llm = LLM(
     enforce_eager=True,
     tensor_parallel_size=1,
 )
-out = llm.generate(["The capital of France is"], SamplingParams(temperature=0.0, max_tokens=100))
+out = llm.generate(
+    ["The capital of France is"], SamplingParams(temperature=0.0, max_tokens=100)
+)
 print(out)
 ```
 
@@ -385,7 +394,7 @@ No extra arguments — the same `hf_overrides` detects the checkpoint's existing
 
 ```python
 llm = LLM(
-    model="deepseek-ai/DeepSeek-R1",           # ships quant_method: "fp8"
+    model="deepseek-ai/DeepSeek-R1",  # ships quant_method: "fp8"
     quantization="quark_online",
     hf_overrides=HF_QUANTIZATION_CONFIGS["ptpc_fp8"],
     tensor_parallel_size=8,

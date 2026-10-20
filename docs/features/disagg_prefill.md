@@ -65,7 +65,10 @@ The token ids are passed to the decode stage through `kv_transfer_params`, the d
 prefill = client.chat.completions.create(
     model=model,
     messages=messages,
-    extra_body={"return_token_ids": True, "kv_transfer_params": {"do_remote_decode": True}},
+    extra_body={
+        "return_token_ids": True,
+        "kv_transfer_params": {"do_remote_decode": True},
+    },
 )
 ids = prefill.prompt_token_ids
 
@@ -73,7 +76,9 @@ decode = client.chat.completions.create(
     model=model,
     messages=messages,
     stream=True,
-    extra_body={"kv_transfer_params": {"do_remote_prefill": True, "prompt_token_ids": ids}},
+    extra_body={
+        "kv_transfer_params": {"do_remote_prefill": True, "prompt_token_ids": ids}
+    },
 )
 ```
 

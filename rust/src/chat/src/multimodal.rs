@@ -22,8 +22,7 @@ use llm_multimodal::{
     AsyncMultiModalTracker, AudioClip, AudioPreProcessor, EncoderFieldLayouts, FieldLayout,
     ImageFrame, MediaConnector, MediaConnectorConfig, MediaContentPart, Modality, ModelMetadata,
     ModelProcessorSpec, PreProcessorConfig, PreprocessedEncoderInputs, PromptReplacement,
-    Tokenizer as TokenResolver, TrackedMedia, VideoClip, VisionPreProcessor,
-    VisionPreprocessingContext,
+    Tokenizer as TokenResolver, TrackedMedia, VisionPreProcessor, VisionPreprocessingContext,
 };
 use serde::{Deserialize, Serialize};
 use thiserror_ext::AsReport as _;
@@ -39,6 +38,7 @@ use crate::request::{ChatContent, ChatContentPart, ChatMessage, ChatRequest};
 
 mod audio;
 mod expand;
+mod glm5_next;
 mod image;
 mod input;
 mod item;
@@ -63,6 +63,7 @@ pub struct MultimodalModelInfo {
     video: Option<VisionModalitySupport>,
     audio: Option<AudioModalitySupport>,
     media_connector: Arc<MediaConnector>,
+    video_sampling: Option<glm5_next::video::VideoSampling>,
     /// Maximum number of input items allowed per prompt for each modality.
     limit_mm_per_prompt: MmLimitPerPrompt,
 }
@@ -318,7 +319,7 @@ fn load_preprocessor_config(
 struct FetchedMedia {
     images: Vec<Arc<ImageFrame>>,
     image_uuids: Vec<Option<String>>,
-    videos: Vec<Arc<VideoClip>>,
+    videos: Vec<video::FetchedVideo>,
     video_uuids: Vec<Option<String>>,
     audios: Vec<Arc<AudioClip>>,
     audio_uuids: Vec<Option<String>>,
@@ -402,6 +403,13 @@ impl MultimodalModelInfo {
         video_preprocessor_config: PreProcessorConfig,
         limit_mm_per_prompt: MmLimitPerPrompt,
     ) -> Result<Option<Self>> {
+        let video_sampling = if glm5_next::Glm5NextSpec.matches(&context.metadata()) {
+            Some(glm5_next::video::VideoSampling::new(
+                &video_preprocessor_config,
+            )?)
+        } else {
+            None
+        };
         let (image, video) = Self::resolve_vision_lanes(
             &context,
             preprocessor_config.clone(),
@@ -439,6 +447,7 @@ impl MultimodalModelInfo {
             video,
             audio,
             media_connector,
+            video_sampling,
             limit_mm_per_prompt,
         }))
     }
@@ -901,11 +910,24 @@ impl MultimodalModelInfo {
     )]
     async fn fetch_media(&self, media_parts: Vec<MediaContentPart>) -> Result<FetchedMedia> {
         let mut tracker = AsyncMultiModalTracker::new(Arc::clone(&self.media_connector));
+        let mut glm_videos = Vec::new();
         for part in media_parts {
+            if let (Some(sampling), MediaContentPart::VideoUrl { url, uuid }) =
+                (&self.video_sampling, &part)
+            {
+                let url = url.clone();
+                let uuid = uuid.clone();
+                glm_videos.push(async move { Ok::<_, Error>((sampling.fetch(url).await?, uuid)) });
+                continue;
+            }
             tracker.push_part(part)?;
         }
 
-        let mut tracker_output = tracker.finalize().await?;
+        let (tracker_output, glm_videos) = tokio::try_join!(
+            async { tracker.finalize().await.map_err(Error::from) },
+            futures::future::try_join_all(glm_videos),
+        )?;
+        let mut tracker_output = tracker_output;
 
         let images = tracker_output
             .data
@@ -921,19 +943,26 @@ impl MultimodalModelInfo {
             .collect::<Result<Vec<_>>>()?;
         let image_uuids = tracker_output.uuids.remove(&Modality::Image).unwrap_or_default();
 
-        let videos = tracker_output
+        let mut videos = tracker_output
             .data
             .remove(&Modality::Video)
             .unwrap_or_default()
             .into_iter()
             .map(|media| match media {
-                TrackedMedia::Video(clip) => Ok(clip),
+                TrackedMedia::Video(clip) => Ok(video::FetchedVideo {
+                    clip,
+                    timestamps: None,
+                }),
                 _ => Err(multimodal!(
                     "tracker returned non-video media for the video modality"
                 )),
             })
             .collect::<Result<Vec<_>>>()?;
-        let video_uuids = tracker_output.uuids.remove(&Modality::Video).unwrap_or_default();
+        let mut video_uuids = tracker_output.uuids.remove(&Modality::Video).unwrap_or_default();
+        for (video, uuid) in glm_videos {
+            videos.push(video);
+            video_uuids.push(uuid);
+        }
 
         let audios = tracker_output
             .data
@@ -1086,6 +1115,22 @@ mod tests {
 
     pub(super) fn qwen3_vl_info() -> MultimodalModelInfo {
         test_info("qwen3_vl", qwen3_vl_config(), qwen3_vl_tokenizer())
+    }
+
+    #[test]
+    fn glm5_next_resolves_image_and_video_support() {
+        let tokenizer = TestTokenizer::new()
+            .with_regular_token("<|image|>", 256)
+            .with_regular_token("<|video|>", 257);
+        let info = test_info(
+            "glm5_next",
+            serde_json::json!({"model_type": "glm5_next", "vision_config": {}}),
+            tokenizer,
+        );
+
+        assert_eq!(info.placeholder_token(Modality::Image), Some("<|image|>"));
+        assert_eq!(info.placeholder_token(Modality::Video), Some("<|video|>"));
+        assert_eq!(info.placeholder_token(Modality::Audio), None);
     }
 
     #[test]

@@ -26,6 +26,11 @@ use crate::error::{Error, Result, bail_multimodal, multimodal};
 /// `video_grid_thw`, mirroring the HF processor output naming.
 pub(super) const VIDEO_PRIMARY_KEY: &str = "pixel_values_videos";
 
+pub(super) struct FetchedVideo {
+    pub clip: Arc<VideoClip>,
+    pub timestamps: Option<Vec<f64>>,
+}
+
 impl MultimodalModelInfo {
     /// Preprocess fetched video clips one at a time and build per-item
     /// features.
@@ -41,7 +46,7 @@ impl MultimodalModelInfo {
     )]
     pub(super) async fn prepare_videos(
         &self,
-        clips: Vec<Arc<VideoClip>>,
+        clips: Vec<FetchedVideo>,
         uuids: Vec<Option<String>>,
         model_dtype: ModelDtype,
     ) -> Result<PreparedMedia> {
@@ -51,10 +56,18 @@ impl MultimodalModelInfo {
         let mut replacements = Vec::with_capacity(clips.len());
         let mut items = Vec::with_capacity(clips.len());
 
-        for (clip, uuid) in izip!(&clips, uuids) {
-            let preprocessed = self.preprocess_video_clip(support, Arc::clone(clip)).await?;
-            let mut clip_replacements =
-                support.spec.prompt_replacements_for(&self.context, &preprocessed)?;
+        for (video, uuid) in izip!(clips, uuids) {
+            let clip = video.clip;
+            let preprocessed = self.preprocess_video_clip(support, Arc::clone(&clip)).await?;
+            let mut clip_replacements = if let Some(timestamps) = video.timestamps {
+                super::glm5_next::video_replacements(
+                    &self.context.metadata(),
+                    &preprocessed,
+                    &timestamps,
+                )?
+            } else {
+                support.spec.prompt_replacements_for(&self.context, &preprocessed)?
+            };
             if clip_replacements.len() != 1 {
                 bail_multimodal!(
                     "expected exactly one prompt replacement per video clip, got {}",

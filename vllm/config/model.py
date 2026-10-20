@@ -89,6 +89,7 @@ ConvertOption = Literal["auto", ConvertType]
 TokenizerMode = Literal[
     "auto",
     "hf",
+    "glm5_next",
     "mistral",
     "deepseek_v32",
     "deepseek_v4",

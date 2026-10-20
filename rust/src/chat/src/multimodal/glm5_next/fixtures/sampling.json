@@ -1,0 +1,86 @@
+[
+  {
+    "total": 1,
+    "fps": 1,
+    "duration": 1,
+    "count": 2,
+    "sha256": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+  },
+  {
+    "total": 3,
+    "fps": 1,
+    "duration": 3,
+    "count": 4,
+    "sha256": "f4d03f0bee0ca7c1ec55a1e843292733a6d95119140e2dc2d1ec4746b02d27d7"
+  },
+  {
+    "total": 30,
+    "fps": 30,
+    "duration": 1,
+    "count": 2,
+    "sha256": "d0355dfeeb5fa7da12264c35636823a116791b2b76ec1b114572d134a0e1d890"
+  },
+  {
+    "total": 37,
+    "fps": 29.97,
+    "duration": 1.234567901234568,
+    "count": 2,
+    "sha256": "d0355dfeeb5fa7da12264c35636823a116791b2b76ec1b114572d134a0e1d890"
+  },
+  {
+    "total": 900,
+    "fps": 30,
+    "duration": 30,
+    "count": 60,
+    "sha256": "64716f8a14251b65fed99e58294cb4262d10d628917c5e0a8bc03efc7bf571fd"
+  },
+  {
+    "total": 9030,
+    "fps": 30,
+    "duration": 301,
+    "count": 602,
+    "sha256": "bee3e8a4a44212402b2b1d9125b15b6473d2d974985c34187bbbeb6973c3bb71"
+  },
+  {
+    "total": 36000,
+    "fps": 30,
+    "duration": 1200,
+    "count": 2048,
+    "sha256": "d4fcd00ba85ff36ff565ae245d10dd80e50bec675f5f9f7a0a15ddbb2660d090"
+  },
+  {
+    "total": 31,
+    "fps": 30,
+    "duration": null,
+    "count": 4,
+    "sha256": "d5747053e6a12804cb25ab0788848ae2abc304ac863035e09ece3e70a2593d6e"
+  },
+  {
+    "total": 2,
+    "fps": 24,
+    "duration": null,
+    "count": 2,
+    "sha256": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb"
+  },
+  {
+    "total": 101,
+    "fps": 7.5,
+    "duration": null,
+    "count": 28,
+    "sha256": "296078b1633716f52d146c2586c230951dcdecd367430120e583664c1ecec7a6"
+  },
+  {
+    "total": 599,
+    "fps": 29.97,
+    "duration": 20,
+    "count": 40,
+    "sha256": "d7f5ea06ed05f52f3d91ce36f0a2d456b94eb02b89117536485f304a5d73728e"
+  },
+  {
+    "total": 10,
+    "fps": 30,
+    "duration": 0.2,
+    "count": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

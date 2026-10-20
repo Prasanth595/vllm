@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import copy
 import itertools
 import time
 from collections import defaultdict, deque
@@ -2705,6 +2706,16 @@ class Scheduler(SchedulerInterface):
         return request_id in self.requests
 
     def add_request(self, request: Request) -> None:
+        params = request.sampling_params
+        if (
+            self.connector is not None
+            and params is not None
+            and params.prompt_logprob_token_ids is not None
+        ):
+            # Connector admission may truncate prompts before cache lookup.
+            request.sampling_params = copy.copy(params)
+            request.sampling_params.skip_reading_prefix_cache = True
+            request.skip_reading_prefix_cache = True
         existing = self.requests.get(request.request_id)
         if existing is not None:
             update = StreamingUpdate.from_request(request)

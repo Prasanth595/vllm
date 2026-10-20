@@ -55,12 +55,12 @@ lists of Python ints are much slower to copy and serialize. With a logits
 - The longest row at most `--max-logprobs` candidates.
 - No `--kv-sharing-fast-prefill`.
 
-The request skips reading the prefix cache (local and KV connector), since
-cached rows have no logits to score.
+Scoring skips prefix-cache reads by default. With `skip_reading_prefix_cache=False`,
+local reuse ends before `prompt_logprob_start` (default: 0), following the existing
+cache lookup alignment. Ordinary `prompt_logprobs` or a KV connector disable
+cache reads; connector admission must also honor the skip flag.
 
 ## Limitations
 
 - Non-streaming only; `stream=true` requests are rejected.
 - Not exposed through the OpenAI-compatible endpoints.
-- If a prefill starts past the first scored row (e.g. `skip_reading_prefix_cache=False`
-  with a cache hit), the result is `None` rather than a partial matrix.

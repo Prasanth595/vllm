@@ -197,7 +197,7 @@ variants:
       ascend_910c:
         docker_image: "quay.io/ascend/vllm-ascend:kimi-k3-a3"
       ascend_950dt_8x:
-        docker_image: "quay.io/ascend/vllm-ascend:v0.27.1rc1-a5@sha256:569fecd9d68fd1c1fd0e8e5b0a21d55e2cac890ef2c2e35c9e7b37b15a917cc2"
+        docker_image: "quay.io/ascend/vllm-ascend:kimi-k3-a5"
         docker_serve_command: "vllm serve"
         install:
           pip: false
@@ -569,7 +569,7 @@ guide: |
   The [vLLM-Ascend v0.27.1rc1 guide](https://docs.vllm.ai/projects/ascend/en/v0.27.1rc1/tutorials/models/Kimi-K3.html) documents an experimental four-node mixed Prefill/Decode deployment on 950DT: eight NPUs per node, TP8 within each node, DP4 across nodes, and EP32. This recipe declares support from that guide; the A5 commands have not been independently run for this recipe.
 
   - **Weights:** download [Eco-Tech/Kimi-K3-w4a8](https://www.modelscope.cn/models/Eco-Tech/Kimi-K3-w4a8) from ModelScope. For optional DSpark, also download the [RadixArk/Kimi-K3-DSpark](https://huggingface.co/RadixArk/Kimi-K3-DSpark) GQA draft. Stage the same checkpoint revisions at identical container-visible paths on every node; replace the generated target-model argument and the DSpark JSON `model` value with those local paths.
-  - **Runtime:** use the pinned `quay.io/ascend/vllm-ascend:v0.27.1rc1-a5` release image selected by the A5 variant. It contains the matching vLLM-Ascend runtime; a generic upstream vLLM pip installation is insufficient. The tutorial's `kimi-k3-a5` image aliases were unavailable when this recipe was prepared, so this recipe pins the published release image instead. This image substitution still requires validation on the target cluster.
+  - **Runtime:** use the source tutorial's `quay.io/ascend/vllm-ascend:kimi-k3-a5` image selected by the A5 variant. Follow the tutorial's container and environment setup on every node.
   - **Builder:** select **Ascend 950DT 8x**, **W4A8 (Ascend)**, **Multi-Node TP + Data Parallel**, **4 nodes**, and the **Python** frontend. The baseline context is 131,072 tokens, with 16 sequences and a 24,576-token batch budget. Enable **Speculative Decoding** for seven DSpark draft tokens, draft TP8, greedy drafting, and eager draft execution.
   - **Networking:** set `LOCAL_IP` separately on each node and set `IFACE_NAME` to the interface owning that address. Ensure `$HEAD_IP` in the generated commands points to node 0. Leave `HCCL_OP_EXPANSION_MODE` unset for mixed deployment. Start the head first, then the three worker commands with distinct DP start ranks 1, 2, and 3.
 

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use thiserror_ext::AsReport as _;
 use tracing::{info, warn};
 use vllm_text::backend::hf::{
-    HfTextBackend, ResolvedModelFiles, load_model_config, load_tokenizer_config,
+    HfTextBackend, ResolvedModelFiles, TokenizerSource, load_model_config, load_tokenizer_config,
 };
 use vllm_text::tokenizer::DynTokenizer;
 use vllm_text::{DynTextBackend, TextBackend as _};
@@ -104,10 +104,12 @@ impl HfChatBackend {
                         "glm5_next does not accept --chat-template; use --tokenizer-mode hf for Jinja"
                     );
                 }
-                Arc::new(
-                    Glm5NextChatRenderer::new(options.default_chat_template_kwargs)
-                        .with_multimodal(model_type == "glm5_next"),
-                )
+                let mut renderer = Glm5NextChatRenderer::new(options.default_chat_template_kwargs)
+                    .with_multimodal(model_type == "glm5_next");
+                if let TokenizerSource::HuggingFace(path) = &files.tokenizer {
+                    renderer = renderer.with_tokenizer(tokenizer.clone(), path)?;
+                }
+                Arc::new(renderer)
             }
         };
 

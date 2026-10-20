@@ -5741,6 +5741,7 @@ version = "0.1.0"
 name = "vllm-chat"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "asynk-strim-attr",
  "base64 0.22.1",
@@ -5757,6 +5758,7 @@ dependencies = [
  "minijinja-contrib",
  "ndarray",
  "oss-harmony",
+ "parking_lot",
  "paste",
  "reqwest 0.13.4",
  "rmp-serde",

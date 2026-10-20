@@ -2,11 +2,14 @@
 // SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use vllm_text::Prompt;
+use vllm_tokenizer::{DynTokenizer, HuggingFaceTokenizer};
 
-use super::{Glm5NextChatRenderer, encoding};
+use super::{Glm5NextChatRenderer, encoding, tokenization::SegmentTokenizer};
 use crate::renderer::hf::{ChatTemplateContentFormatOption, HfChatRenderer, MultimodalRenderInfo};
 use crate::request::{
     ChatMessage, ChatRequest, ChatTool, GenerationPromptMode, ResolvedToolContext,
@@ -304,4 +307,157 @@ fn media_parts_render_reminders_without_multimodal_inputs() {
     let rendered = Glm5NextChatRenderer::default().render(&request).unwrap();
     assert!(rendered.prompt.into_text().unwrap().contains("unable to process this image"));
     assert_eq!(rendered.media_order, Some(Vec::new()));
+}
+
+/// Exercise BPE merges, added-token recognition and Unicode without a checkpoint download.
+fn tokenizer_fixture() -> Value {
+    let vocab: serde_json::Map<String, Value> = (0u32..256)
+        .map(|byte| {
+            let ch = match byte {
+                33..=126 | 161..=172 | 174..=255 => char::from_u32(byte).unwrap(),
+                _ => {
+                    let index = (0..byte)
+                        .filter(|b| !matches!(b, 33..=126 | 161..=172 | 174..=255))
+                        .count();
+                    char::from_u32(256 + index as u32).unwrap()
+                }
+            };
+            (ch.to_string(), json!(byte))
+        })
+        .chain([("ab".into(), json!(256)), ("abc".into(), json!(257))])
+        .collect();
+    let tokens = [
+        "[gMASK]",
+        "<sop>",
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|observation|>",
+        "<think>",
+        "</think>",
+        "<tool_call>",
+        "</tool_call>",
+        "<tool_response>",
+        "</tool_response>",
+        "<arg_key>",
+        "</arg_key>",
+        "<arg_value>",
+        "</arg_value>",
+        "<|image|>",
+        "<|video|>",
+        "<|begin_of_image|>",
+        "<|end_of_image|>",
+        "<|begin_of_video|>",
+        "<|end_of_video|>",
+        "<tool_call>long",
+    ];
+    json!({
+        "version": "1.0", "truncation": null, "padding": null, "normalizer": null,
+        "added_tokens": tokens.iter().enumerate().map(|(i, content)| json!({
+            "id": 258 + i, "content": content, "single_word": false,
+            "lstrip": false, "rstrip": false, "normalized": false, "special": i < 6,
+        })).collect::<Vec<_>>(),
+        "pre_tokenizer": {"type": "Sequence", "pretokenizers": [
+            {"type": "Split", "pattern": {"Regex": " ?\\p{L}+| ?[^\\s\\p{L}]+|\\s+"},
+             "behavior": "Isolated", "invert": false},
+            {"type": "ByteLevel", "add_prefix_space": false,
+             "trim_offsets": true, "use_regex": false}
+        ]},
+        "post_processor": {"type": "ByteLevel", "add_prefix_space": true,
+                           "trim_offsets": false, "use_regex": true},
+        "decoder": {"type": "ByteLevel", "add_prefix_space": false,
+                    "trim_offsets": false, "use_regex": false},
+        "model": {"type": "BPE", "dropout": null, "unk_token": null,
+                  "continuing_subword_prefix": null, "end_of_word_suffix": null,
+                  "fuse_unk": false, "byte_fallback": false, "ignore_merges": false,
+                  "vocab": vocab, "merges": [["a", "b"], ["ab", "c"]]}
+    })
+}
+
+#[test]
+fn segmented_tokens_match_whole_prompt_on_both_tokenizer_backends() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = std::env::var_os("VLLM_GLM_TOKENIZER_JSON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let path = dir.path().join("tokenizer.json");
+            std::fs::write(&path, serde_json::to_vec(&tokenizer_fixture()).unwrap()).unwrap();
+            path
+        });
+    let fixtures: TestCases =
+        serde_json::from_str(include_str!("fixtures/test_cases.json")).unwrap();
+    let mut prompts: Vec<String> =
+        fixtures.cases.into_iter().filter_map(|case| case.expected).collect();
+    prompts.extend(
+        [
+            "",
+            " abc ",
+            "e\u{301}中文🙂\r\n<think><tool_call>long<arg_key>abc</arg_key>",
+            "<think>literal<|user|>control</think><|image|><|video|>",
+        ]
+        .map(str::to_owned),
+    );
+    for constructor in [
+        HuggingFaceTokenizer::new_hf,
+        HuggingFaceTokenizer::new_fastokens,
+    ] {
+        let tokenizer: DynTokenizer = Arc::new(constructor(&path).unwrap());
+        let segmented = SegmentTokenizer::from_file(tokenizer.clone(), &path).unwrap().unwrap();
+        // The first pass seeds the cache from whole-prompt encoding; the second
+        // pass reuses the cached segments.
+        for prompt in prompts.iter().chain(&prompts) {
+            assert_eq!(
+                segmented.encode(prompt).unwrap(),
+                tokenizer.encode(prompt, false).unwrap(),
+                "{prompt:?}"
+            );
+        }
+        let request = tool_request(2);
+        let text = Glm5NextChatRenderer::default().render(&request).unwrap().prompt;
+        let ids = tokenizer.encode(&text.into_text().unwrap(), false).unwrap();
+        let renderer = Glm5NextChatRenderer::default().with_tokenizer(tokenizer, &path).unwrap();
+        assert_eq!(
+            renderer.render(&request).unwrap().prompt,
+            Prompt::TokenIds(ids)
+        );
+    }
+}
+
+#[test]
+fn incompatible_tokenizer_rules_keep_whole_prompt_encoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = tokenizer_fixture();
+    let path = dir.path().join("tokenizer.json");
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let tokenizer: DynTokenizer = Arc::new(HuggingFaceTokenizer::new_hf(&path).unwrap());
+    for (pointer, value) in [
+        ("/normalizer", json!({"type": "NFC"})),
+        (
+            "/pre_tokenizer/pretokenizers/1/add_prefix_space",
+            json!(true),
+        ),
+        ("/post_processor/type", json!("TemplateProcessing")),
+        ("/added_tokens/0/lstrip", json!(true)),
+        ("/added_tokens/0/rstrip", json!(true)),
+        ("/added_tokens/0/single_word", json!(true)),
+        ("/added_tokens/0/normalized", json!(true)),
+        ("/padding", json!({})),
+        ("/truncation", json!({})),
+        ("/model/dropout", json!(0.1)),
+    ] {
+        let mut changed = config.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            SegmentTokenizer::from_config(tokenizer.clone(), &changed).unwrap().is_none(),
+            "{pointer}"
+        );
+    }
+    let mut changed = config;
+    changed["added_tokens"].as_array_mut().unwrap().pop();
+    std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
+    let renderer = Glm5NextChatRenderer::default().with_tokenizer(tokenizer, &path).unwrap();
+    assert!(matches!(
+        renderer.render(&tool_request(1)).unwrap().prompt,
+        Prompt::Text(_)
+    ));
 }

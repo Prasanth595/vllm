@@ -2,11 +2,15 @@
 // SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 mod encoding;
+mod tokenization;
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use serde_json::Value;
 use vllm_text::Prompt;
+use vllm_text::tokenizer::DynTokenizer;
 
 use super::{ChatRenderer, RenderedPrompt};
 use crate::error::{Result, bail_chat_template_thrown};
@@ -16,6 +20,7 @@ use crate::request::ChatRequest;
 pub struct Glm5NextChatRenderer {
     default_template_kwargs: HashMap<String, Value>,
     multimodal: bool,
+    tokenizer: Option<Arc<tokenization::SegmentTokenizer>>,
 }
 
 impl Glm5NextChatRenderer {
@@ -23,7 +28,14 @@ impl Glm5NextChatRenderer {
         Self {
             default_template_kwargs,
             multimodal: false,
+            tokenizer: None,
         }
+    }
+
+    /// Enable bounded text-segment caching for compatible GLM tokenizer files.
+    pub fn with_tokenizer(mut self, tokenizer: DynTokenizer, path: &Path) -> Result<Self> {
+        self.tokenizer = tokenization::SegmentTokenizer::from_file(tokenizer, path)?.map(Arc::new);
+        Ok(self)
     }
 
     pub fn with_multimodal(mut self, enabled: bool) -> Self {
@@ -69,8 +81,12 @@ impl ChatRenderer for Glm5NextChatRenderer {
                 Vec::new(),
             )
         };
+        let prompt = match &self.tokenizer {
+            Some(tokenizer) => Prompt::TokenIds(tokenizer.encode(&prompt)?),
+            None => Prompt::Text(prompt),
+        };
         Ok(RenderedPrompt {
-            prompt: Prompt::Text(prompt),
+            prompt,
             media_order: Some(media_order),
             effective_template_kwargs: kwargs,
         })

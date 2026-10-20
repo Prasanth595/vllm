@@ -5088,3 +5088,15 @@ class TestMambaHybridOffloadServing:
             False,
         ]
         assert self._roundtrip_served_tokens(scheduler) == 16
+
+
+@pytest.mark.parametrize("blocks_per_chunk", [1, 4])
+def test_external_load_alignment_is_one_offload_chunk(request_runner, blocks_per_chunk):
+    runner = request_runner(
+        block_size=16,
+        num_gpu_blocks=100,
+        async_scheduling=False,
+        blocks_per_chunk=blocks_per_chunk,
+    )
+
+    assert runner.scheduler_connector.external_load_alignment == 16 * blocks_per_chunk

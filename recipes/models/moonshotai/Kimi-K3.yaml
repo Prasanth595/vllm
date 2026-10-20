@@ -4,7 +4,7 @@ meta:
   provider: "Moonshot AI"
   description: "Pre-release 2.8T-parameter native multimodal MoE with Kimi Delta Attention, Gated MLA, Attention Residuals, and a 1M-token context window"
   date_added: 2026-07-27
-  date_updated: 2026-10-18
+  date_updated: 2026-10-20
   tasks:
     - multimodal
     - text
@@ -13,6 +13,9 @@ meta:
     - "moonshotai/Kimi-K2.6"
     - "moonshotai/Kimi-K2.5"
   default_hardware: b300
+  default_variant:
+    ascend_910c: ascend_w4a8
+    ascend_950dt_8x: ascend_w4a8
   hardware:
     h200: verified
     b200: verified
@@ -21,6 +24,7 @@ meta:
     gb300: verified
     mi355x: verified
     ascend_910c: verified
+    ascend_950dt_8x: supported
 
 model:
   model_id: "moonshotai/Kimi-K3"
@@ -86,6 +90,14 @@ features:
         args:
           - "--speculative-config"
           - '{"method":"dspark","model":"RedHatAI/Kimi-K3-speculator.dspark","num_speculative_tokens":7,"enforce_eager":true}'
+      ascend_910c:
+        args:
+          - "--speculative-config"
+          - '{"method":"dspark","model":"Eco-Tech/Kimi-K3-DSpark-MLA-NPU","num_speculative_tokens":7,"draft_tensor_parallel_size":16,"draft_sample_method":"greedy","enforce_eager":true}'
+      ascend_950dt_8x:
+        args:
+          - "--speculative-config"
+          - '{"method":"dspark","model":"Inferact/Kimi-K3-DSpark-Block5","num_speculative_tokens":7,"draft_tensor_parallel_size":8,"draft_sample_method":"greedy","enforce_eager":true}'
   text_only:
     description: "Skip the vision encoder for text-only workloads. Mutually exclusive with encoder_parallel."
     args:
@@ -153,7 +165,7 @@ variants:
     precision: int4
     label: "W4A8 (Ascend)"
     vram_minimum_gb: 1711
-    supported_hardware: [ascend_910c]
+    supported_hardware: [ascend_910c, ascend_950dt_8x]
     extra_args:
       - "--quantization"
       - "ascend"
@@ -189,6 +201,28 @@ variants:
     hardware_overrides:
       ascend_910c:
         docker_image: "quay.io/ascend/vllm-ascend:kimi-k3-a3"
+        docker_serve_command: "vllm serve"
+        extra_args:
+          - "--max-num-batched-tokens"
+          - "8192"
+          - "--tokenizer-mode"
+          - "kimi_k3"
+        extra_env:
+          HCCL_IF_IP: "$LOCAL_IP"
+          HCCL_SOCKET_IFNAME: "$IFACE_NAME"
+          ASCEND_RT_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+      ascend_950dt_8x:
+        docker_image: "quay.io/ascend/vllm-ascend:kimi-k3-a5"
+        docker_serve_command: "vllm serve"
+        install:
+          pip: false
+        extra_args:
+          - "--tokenizer-mode"
+          - "kimi_k3"
+        extra_env:
+          HCCL_IF_IP: "$LOCAL_IP"
+          HCCL_SOCKET_IFNAME: "$IFACE_NAME"
+          ASCEND_RT_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
     description: "ModelSlim INT4 W4A8 for Ascend NPU. Requires --quantization ascend. Validated on 4× 910C mixed P/D."
 
   fp8:
@@ -216,18 +250,24 @@ strategy_hardware:
     gb200: supported
     gb300: supported
     ascend_910c: supported
+    ascend_950dt_8x: supported
   multi_node_dep:
     h100: unsupported
     h200: unsupported
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tp:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tep:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tp_pp:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   pd_cluster:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
 
 default_strategy: single_node_tp
 
@@ -252,6 +292,7 @@ strategy_min_gpus:
   gb200:
     multi_node_tp: 16
   ascend_910c: 64
+  ascend_950dt_8x: 32
 
 
 hardware_overrides:
@@ -537,6 +578,38 @@ guide: |
   - **CUDA:** The kimi-k3 image ships as a CUDA 13 (cu130) build only — there is no -cu129 tag, and the K3-enabled wheels are not on the cu129 nightly index. The host needs an r580+ NVIDIA driver; on a CUDA 12.9 (r575) host, upgrade the driver or build vLLM from the K3 branch against cu129 PyTorch yourself.
   - **Hardware:** At least 8x GB300. Multi-node for real production traffic.
   - **ROCm:** At least 8x MI355X/MI350X. On MI355X the command builder uses the ROCm 10.0 nightly image `vllm/vllm-openai-rocm:nightly-rocm100`; the day-0 `vllm/vllm-openai-rocm:kimi-k3` image predates the DSpark and MoE fixes that path needs (see [AMD MI355X: InferenceX AgentX alignment](#amd-mi355x-inferencex-agentx-alignment)).
+
+  ## Ascend A3 and 950DT (A5)
+
+  This Ascend configuration follows [vLLM-Ascend PR #18992](https://github.com/vllm-project/vllm-ascend/pull/18992), pinned to the [tutorial at `fb99a4a`](https://github.com/vllm-project/vllm-ascend/blob/fb99a4a2dbf94505201e95d049db92b7c731b302/docs/source/tutorials/models/Kimi-K3.md). The builder covers the four-node mixed Prefill/Decode deployment in Section 5.1. These recipe commands have not been independently run on NPUs.
+
+  | Platform | Mixed topology | Token batch budget | DSpark checkpoint (ModelScope) |
+  | --- | --- | --- | --- |
+  | Ascend 910C (A3), 16 NPUs/node | TP16 / DP4 / EP64 | 8192 | [Eco-Tech/Kimi-K3-DSpark-MLA-NPU](https://modelscope.cn/models/Eco-Tech/Kimi-K3-DSpark-MLA-NPU), further trained by Ant Group |
+  | Ascend 950DT (A5), 8 NPUs/node | TP8 / DP4 / EP32 | 24576 | [Inferact/Kimi-K3-DSpark-Block5](https://modelscope.cn/models/Inferact/Kimi-K3-DSpark-Block5) |
+
+  - **Weights:** download [Eco-Tech/Kimi-K3-w4a8](https://www.modelscope.cn/models/Eco-Tech/Kimi-K3-w4a8) and the optional platform-specific DSpark checkpoint from ModelScope. Stage identical revisions at identical container-visible paths on every node. Replace the generated target-model argument and the DSpark JSON `model` value with those local paths; the checkpoint identifiers in the builder do not download ModelScope weights automatically.
+  - **Runtime:** use `quay.io/ascend/vllm-ascend:kimi-k3-a3` on A3 or `quay.io/ascend/vllm-ascend:kimi-k3-a5` on A5, following the pinned tutorial's container setup. On A3, run `unset LD_PRELOAD` before serving; the tutorial excludes the jemalloc preload.
+  - **Builder:** select the platform, **W4A8 (Ascend)**, **Multi-Node TP + Data Parallel**, **4 nodes**, and **Python**. Mixed deployment uses 131,072-token context, 16 sequences, and memory utilization 0.9. **Speculative Decoding** selects seven DSpark tokens, draft TP16 on A3 or TP8 on A5, greedy drafting, and eager draft execution.
+  - **Networking:** set `LOCAL_IP` on each node and `IFACE_NAME` to the interface owning that address. Set `$HEAD_IP` to node 0. Leave `HCCL_OP_EXPANSION_MODE` unset for mixed deployment; both platforms use `HCCL_BUFFSIZE=800`. Start the head, then workers with distinct DP start ranks 1, 2, and 3. The builder does not add `--headless` to these DP workers; add it to the Node 1-3 commands as shown in Section 5.1. If overriding `--data-parallel-rpc-port`, use the same port on every node.
+
+  ### Ascend PD separation and MemCache pooling
+
+  Follow Sections 5.2 and 5.3 of the pinned tutorial for the eight-node deployment (four Prefill nodes and four Decode nodes). Both roles use Model Runner V2, MooncakeConnectorV2, 1,048,576-token maximum context, and memory utilization 0.80. Prefill enables MegaMoE and shared expert DP; Decode enables MLAPO and the recompute scheduler. EPLB and profiling remain disabled.
+
+  | Setting | A3 Prefill / Decode | A5 Prefill / Decode |
+  | --- | --- | --- |
+  | DP / TP / PP | 1 / 16 / 4; 4 / 16 / 1 | 1 / 8 / 4; 4 / 8 / 1 |
+  | Prefill layer partition | `25,25,24,19` | `24,24,24,21` |
+  | Token batch budget | 8192 / 8192 | 16384 / 768 |
+  | HCCL buffer | 1024 / 1024 | 800 / 800 |
+  | HCCL expansion mode | Unset (AICPU) / `AIV` | `CCU_SCHED` / `CCU_SCHED` |
+  | Decode KV block / interleave size | 384 / 384 | 768 / 768 |
+  | Decode DCP, only at context >= 65,536 | 16 | 8 |
+
+  Use the platform's DSpark checkpoint on both roles, with seven draft tokens and matching draft TP. Prefill keeps eager execution; Decode uses draft `enforce_eager: false` and target `FULL_DECODE_ONLY`. For shorter-context workloads, omit DCP or set it to 1. On A3, keep the Prefill layer partition in both `VLLM_PP_LAYER_PARTITION` and the Mooncake KV configuration on both roles; A5 sets it only in the Prefill environment. All Prefill ranks share the same master address and port; only worker ranks 1-3 add `--headless`.
+
+  Pooled deployment combines MooncakeConnectorV2 and AscendStoreConnector through MultiConnector with MemCache. Start MetaService and each node's standalone MemCache process before the engines, retain `MMC_LOCAL_CONFIG_PATH`, and use lookup identifier 0 for all Prefill ranks and 4-7 for Decode ranks 0-3. These role-specific launchers and connectors are documented in the source tutorial; the builder's generic NIXL PD and Mooncake KV-offload options do not implement this Ascend deployment.
 
   ## Client Usage
 

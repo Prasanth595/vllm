@@ -236,7 +236,6 @@ _EMBEDDING_MODELS = {
         if arch == "LlamaForCausalLM"
     },
     "MistralModel": ("llama", "LlamaForCausalLM"),
-    "ModernBertModel": ("modernbert", "ModernBertModel"),
     "NomicBertModel": ("bert_with_rope", "NomicBertModel"),
     "Phi3ForCausalLM": ("phi3", "Phi3ForCausalLM"),
     "Qwen2Model": ("qwen2", "Qwen2ForCausalLM"),
@@ -294,10 +293,6 @@ _TOKEN_CLASSIFICATION_MODELS = {
     "BertForTokenClassification": ("bert", "BertForTokenClassification"),
     "ClefFlashForJointSchema": ("clef_flash", "ClefFlashForJointSchema"),
     "ClefOmniForJointSchema": ("clef_omni", "ClefOmniForJointSchema"),
-    "ModernBertForTokenClassification": (
-        "modernbert",
-        "ModernBertForTokenClassification",
-    ),
     "OpenAIPrivacyFilterForTokenClassification": (
         "openai_privacy_filter",
         "OpenAIPrivacyFilterForTokenClassification",
@@ -324,10 +319,6 @@ _SEQUENCE_CLASSIFICATION_MODELS = {
     "LlamaBidirectionalForSequenceClassification": (
         "llama",
         "LlamaBidirectionalForSequenceClassification",
-    ),
-    "ModernBertForSequenceClassification": (
-        "modernbert",
-        "ModernBertForSequenceClassification",
     ),
     "RobertaForSequenceClassification": ("roberta", "RobertaForSequenceClassification"),
     "XLMRobertaForSequenceClassification": (
@@ -737,6 +728,18 @@ _TRANSFORMERS_SUPPORTED_MODELS = {
     "SmolLM3ForCausalLM": ("transformers", "TransformersForCausalLM"),
     "Starcoder2ForCausalLM": ("transformers", "TransformersForCausalLM"),
     "VaultGemmaForCausalLM": ("transformers", "TransformersForCausalLM"),
+    # Embedding models
+    "ModernBertModel": ("transformers", "TransformersEmbeddingModel"),
+    # Sequence classification models
+    "ModernBertForSequenceClassification": (
+        "transformers",
+        "TransformersForSequenceClassification",
+    ),
+    # Token classification models
+    "ModernBertForTokenClassification": (
+        "transformers",
+        "TransformersForTokenClassification",
+    ),
     # Multimodal models
     "Emu3ForConditionalGeneration": (
         "transformers",
@@ -784,6 +787,11 @@ _TRANSFORMERS_BACKEND_MODELS = {
     "TransformersMultiModalForSequenceClassification": (
         "transformers",
         "TransformersMultiModalForSequenceClassification",
+    ),
+    # Token classification models
+    "TransformersForTokenClassification": (
+        "transformers",
+        "TransformersForTokenClassification",
     ),
 }
 

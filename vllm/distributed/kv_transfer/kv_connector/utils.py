@@ -4,6 +4,7 @@
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+from itertools import chain
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import torch
@@ -72,6 +73,11 @@ class KVOutputAggregator:
         self._failed_recving_pending = set[str]()
         self._expected_finished_count = expected_finished_count
 
+        # KV connector outputs salvaged from failed workers (fault
+        # tolerance scenario), replayed through the normal aggregation
+        # loop at the next aggregate() call.
+        self._salvaged_outputs: list[KVConnectorOutput] = []
+
     @classmethod
     def from_connector(cls, connector: "KVConnectorBase", world_size: int):
         return cls(connector.get_finished_count() or world_size)
@@ -98,15 +104,25 @@ class KVOutputAggregator:
                     finished_set.add(req_id)
                     del remaining_count_dict[req_id]
 
+        # Replay KV connector outputs salvaged from failed workers (fault
+        # tolerance scenario) through the normal aggregation loop below, so
+        # no transfer progress is lost. Their kv_cache_events were already
+        # dropped at salvage time (see ft_defer_kv_connector_outputs).
         finished_sending = set[str]()
         finished_recving = set[str]()
         aggregated_kv_connector_stats = None
         aggregated_kv_connector_worker_meta = None
         combined_kv_cache_events = None
         invalid_block_ids = set[int]()
-        for model_runner_output in outputs:
-            assert model_runner_output is not None
-            kv_output = model_runner_output.kv_connector_output
+
+        salvaged, self._salvaged_outputs = self._salvaged_outputs, []
+
+        kv_outputs: list[KVConnectorOutput | None] = []
+        for o in outputs:
+            assert o is not None
+            kv_outputs.append(o.kv_connector_output)
+
+        for kv_output in chain(salvaged, kv_outputs):
             if not kv_output:
                 continue
             # Allow the worker to dynamically update the expected number of
@@ -187,6 +203,26 @@ class KVOutputAggregator:
         )
 
         return output
+
+    def ft_defer_kv_connector_outputs(
+        self, kv_connector_outputs: list[KVConnectorOutput | None]
+    ) -> None:
+        """Stash KV connector outputs of failed workers (fault tolerance).
+
+        Stashed outputs are replayed through the normal aggregation loop at
+        the next aggregate() call, so no transfer progress is lost.
+
+        kv_cache_events are dropped to keep the FT path simple. The impact
+        is limited: a dropped event only costs a cache miss until its
+        blocks are stored again, and without FT the failed step's events
+        would be lost with the whole instance anyway. Replaying them
+        instead could perturb the live workers' event quorum (e.g. drop a
+        legitimate event under an exact-match quorum).
+        """
+        for o in kv_connector_outputs:
+            if o is not None:
+                o.kv_cache_events = None
+        self._salvaged_outputs.extend(o for o in kv_connector_outputs if o)
 
 
 def _make_src_and_dst_indices(

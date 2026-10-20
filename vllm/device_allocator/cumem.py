@@ -45,7 +45,7 @@ try:
     lib_name = find_loaded_library("cumem_allocator")
     libcudart = CudaRTLibrary()
     cumem_available = True
-except ModuleNotFoundError:
+except ImportError:
     # only cuda and rocm platforms support cumem allocator
     init_module = None
     python_create_and_map = None

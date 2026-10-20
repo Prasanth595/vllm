@@ -3,6 +3,7 @@
 """EPLB communicator implementations and factory."""
 
 import contextlib
+import os
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -354,6 +355,12 @@ class NixlEplbCommunicator(EplbCommunicator):
         # Per-rank expert_id -> physical row; set by set_transfer_context.
         self._expert_to_src_row: list[dict[int, int]] | None = None
         self._layer_idx: int | None = None
+        # (layer, peer) -> local and remote address ranges, diagnostic only.
+        self._desc_ranges: dict[tuple[int, int], list[int]] = {}
+        # (layer, tensor) -> (base_ptr, bytes) as published to the peers.
+        self._published_ptrs: dict[tuple[int, int], tuple[int, int]] = {}
+        # Device backed address ranges, to place a fault address. Diagnostic.
+        self._mappings: dict[int, tuple[int, str]] = {}
         self.set_stream(None)
 
         nixl_agent_config = nixl_utils.nixl_agent_config
@@ -367,9 +374,10 @@ class NixlEplbCommunicator(EplbCommunicator):
         # NIXL registration handles; deregistered in __del__.
         self._registered_descs: list[object] = []
         self._remote_agents: dict[int, str] = {}
-        # peer -> (layer, tensor) -> (base_ptr, bytes_per_expert, dev_id).
+        # peer -> (layer, tensor) ->
+        # (base_ptr, bytes_per_expert, dev_id, total_bytes, num_rows).
         self._remote_send_meta: dict[
-            int, dict[tuple[int, int], tuple[int, int, int]]
+            int, dict[tuple[int, int], tuple[int, int, int, int, int]]
         ] = {}
 
         self._cuda_device_id = int(self._device.index or 0)
@@ -384,6 +392,17 @@ class NixlEplbCommunicator(EplbCommunicator):
         """
         self._init_step("agents", self._init_remote_agents)
         self._init_step("send meta", self._exchange_remote_send_meta)
+        self._init_step("warm transfers", self._warm_peer_transfers)
+        if os.getenv("VLLM_EEP_DEBUG_MAPPINGS") == "1":
+            from vllm.distributed.elastic_ep import rocm_debug
+
+            # The baseline, taken before a single transfer is issued, so
+            # anything UCX maps for a peer later shows up as new.
+            self._mappings = rocm_debug.device_mappings()
+            logger.warning(
+                "[EEP-DEBUG] %d device mapping(s) before any transfer",
+                len(self._mappings),
+            )
 
     @property
     def needs_profile_buffer_reservation(self) -> bool:
@@ -430,12 +449,40 @@ class NixlEplbCommunicator(EplbCommunicator):
                 if self._stream is not None:
                     self._stream.synchronize()
         self._layer_idx = layer_idx
+        self._check_published_ptrs(layer_idx)
         n = self._num_local_experts
         rank_experts = old_indices[: self._world_size * n].reshape(self._world_size, n)
         self._expert_to_src_row = [
             {int(eid): i for i, eid in enumerate(row) if eid != -1}
             for row in rank_experts
         ]
+
+    def _check_published_ptrs(self, layer_idx: int) -> None:
+        """Confirm this rank's expert weights still sit where it said they do.
+
+        Every peer reads this layer straight out of the addresses handed out
+        once, at init. Nothing re-publishes them, so a reallocation of these
+        tensors afterwards leaves the peers reading an address this rank no
+        longer owns, and a READ served from a freed or reused mapping is a
+        fault on this device, not on theirs. The rank that moved its tensors
+        is the only one that can see it happen, which is why the check lives on
+        the sending side.
+        """
+        for t_idx, t in enumerate(self._all_expert_weights[layer_idx]):
+            published = self._published_ptrs.get((layer_idx, t_idx))
+            if published is None:
+                continue
+            base, nbytes = published
+            if t.data_ptr() == base and t.nbytes == nbytes:
+                continue
+            raise RuntimeError(
+                f"NIXL EPLB expert weights moved after their addresses were "
+                f"published: layer {layer_idx} tensor {t_idx} was "
+                f"{nbytes} byte(s) at 0x{base:x} and is now {t.nbytes} "
+                f"byte(s) at 0x{t.data_ptr():x}. Every peer still reads the "
+                f"old address, so their READs land on memory this rank has "
+                f"released."
+            )
 
     def add_recv(
         self,
@@ -454,13 +501,36 @@ class NixlEplbCommunicator(EplbCommunicator):
 
         local_descs: list[tuple[int, int, int]] = []
         remote_descs: list[tuple[int, int, int]] = []
+        # What the peer registered, as opposed to what this layer reads.
+        valid_bounds: list[tuple[int, int]] = []
         for t_idx, t in enumerate(tensors):
-            send_base, send_stride, remote_dev = self._remote_send_meta[src_rank][
-                (layer_idx, t_idx)
-            ]
+            (
+                send_base,
+                send_stride,
+                remote_dev,
+                send_total,
+                send_rows,
+            ) = self._remote_send_meta[src_rank][(layer_idx, t_idx)]
             assert t.nbytes == send_stride, (
                 f"tensor {t_idx} size {t.nbytes} != remote stride {send_stride}"
             )
+            # A READ past the end of the peer's tensor is not refused: the
+            # address is still a plausible device address, so the peer's GPU
+            # takes the access and faults, which kills that rank with nothing
+            # but an address to show for it and leaves every other rank
+            # spinning on a transfer that will never report DONE. The bound is
+            # known here, before the READ is issued, so check it here.
+            if not 0 <= src_row < send_rows:
+                raise RuntimeError(
+                    f"NIXL EPLB would read outside rank {src_rank}'s expert "
+                    f"weights: layer {layer_idx} tensor {t_idx} expert "
+                    f"{expert_id} resolved to row {src_row}, but that peer "
+                    f"holds {send_rows} row(s). The read would start at "
+                    f"0x{send_base + src_row * send_stride:x}, which is "
+                    f"{(src_row - send_rows + 1) * send_stride} byte(s) past "
+                    f"the end of a {send_total} byte region based at "
+                    f"0x{send_base:x}."
+                )
             local_descs.append(
                 (
                     t.data_ptr(),
@@ -475,12 +545,70 @@ class NixlEplbCommunicator(EplbCommunicator):
                     remote_dev,
                 )
             )
+            valid_bounds.append((send_base, send_base + send_total))
+
+        if os.getenv("VLLM_EEP_DEBUG_XFER_DESCS") == "1":
+            self._record_desc_range(
+                layer_idx, src_rank, local_descs, remote_descs, valid_bounds
+            )
 
         local_h, remote_h, xfer_h = self._create_peer_xfer(
             src_rank, local_descs, remote_descs
         )
         self._nixl_wrapper.transfer(xfer_h)
         self._xfer_entries.append((local_h, remote_h, xfer_h))
+
+    def _record_desc_range(
+        self,
+        layer_idx: int,
+        src_rank: int,
+        local_descs: list[tuple[int, int, int]],
+        remote_descs: list[tuple[int, int, int]],
+        valid_bounds: list[tuple[int, int]],
+    ) -> None:
+        """Keep the address span this layer reads from each peer.
+
+        A fault during the reshuffle names the device and the address but
+        nothing else, and the two readings it can have need opposite fixes. If
+        the address falls inside what the peer registered, the mapping was
+        revoked under a descriptor that was still correct, which is a runtime
+        question. If it falls outside, send_base plus src_row times send_stride
+        walked off the registration, which is arithmetic this file owns. The
+        registered bound is recorded next to the span so one line answers that
+        without cross-referencing a second one. One span per layer and peer is
+        cheap, where a line per expert is thousands of lines per
+        reconfiguration.
+
+        Diagnostic only.
+        """
+        key = (layer_idx, src_rank)
+        span = self._desc_ranges.get(key)
+        local_lo = min(addr for addr, _, _ in local_descs)
+        local_hi = max(addr + size for addr, size, _ in local_descs)
+        remote_lo = min(addr for addr, _, _ in remote_descs)
+        remote_hi = max(addr + size for addr, size, _ in remote_descs)
+        valid_lo = min(lo for lo, _ in valid_bounds)
+        valid_hi = max(hi for _, hi in valid_bounds)
+        remote_dev = remote_descs[0][2]
+        if span is None:
+            self._desc_ranges[key] = [
+                local_lo,
+                local_hi,
+                remote_lo,
+                remote_hi,
+                remote_dev,
+                1,
+                valid_lo,
+                valid_hi,
+            ]
+            return
+        span[0] = min(span[0], local_lo)
+        span[1] = max(span[1], local_hi)
+        span[2] = min(span[2], remote_lo)
+        span[3] = max(span[3], remote_hi)
+        span[5] += 1
+        span[6] = min(span[6], valid_lo)
+        span[7] = max(span[7], valid_hi)
 
     def _init_remote_agents(self) -> None:
         local_metadata = self._nixl_wrapper.get_agent_metadata()
@@ -507,25 +635,87 @@ class NixlEplbCommunicator(EplbCommunicator):
         self._nixl_wrapper.register_memory(descs)
         self._registered_descs.append(descs)
 
+    def _report_allocation_extents(self) -> None:
+        """Report how much memory each published tensor really exports.
+
+        An IPC export covers the whole allocation the pointer falls inside,
+        not the tensor handed to it. Under the torch caching allocator these
+        tensors are slices of large pool segments, so exporting one of them
+        hands a peer the whole segment, including unrelated tensors this rank
+        keeps writing to while the peer holds it mapped read only. That would
+        fault the owning rank, on a write, at an address inside no registered
+        region, which is exactly what the logs show and what disappears when
+        the caching allocator is switched off. Nothing in the existing output
+        says whether the segments are shared, so measure it.
+
+        Diagnostic only.
+        """
+        if os.getenv("VLLM_EEP_DEBUG_ALLOC_EXTENTS") != "1":
+            return
+        if not current_platform.is_rocm():
+            return
+        from vllm.distributed.elastic_ep import rocm_debug
+
+        # The receive buffers are registered alongside the weights and are
+        # small enough to be slices of a shared pool segment, so report them
+        # under a negative layer index rather than leaving a hole.
+        spans = dict(sorted(self._published_ptrs.items()))
+        for b_idx, buf in enumerate(self._expert_buffer):
+            spans[(-1, b_idx)] = (buf.data_ptr(), buf.nbytes)
+
+        for (layer_idx, t_idx), (ptr, nbytes) in spans.items():
+            extent = rocm_debug.allocation_extent(ptr)
+            if extent is None:
+                logger.warning(
+                    "[EEP-DEBUG] layer %s tensor %s at 0x%x: HIP will not "
+                    "report an allocation range",
+                    layer_idx,
+                    t_idx,
+                    ptr,
+                )
+                continue
+            base, size = extent
+            logger.warning(
+                "[EEP-DEBUG] layer %s tensor %s exports allocation "
+                "0x%x-0x%x (%d B) for a %d B tensor at 0x%x: offset %d, "
+                "%d B before it and %d B after it go out with it",
+                layer_idx,
+                t_idx,
+                base,
+                base + size,
+                size,
+                nbytes,
+                ptr,
+                ptr - base,
+                ptr - base,
+                max(base + size - (ptr + nbytes), 0),
+            )
+
     def _exchange_remote_send_meta(self) -> None:
         """Exchange per-layer per-tensor metadata so receivers can compute
         remote RDMA addresses at transfer time."""
-        local_meta: dict[tuple[int, int], tuple[int, int, int]] = {}
+        local_meta: dict[tuple[int, int], tuple[int, int, int, int, int]] = {}
         for layer_idx, layer_tensors in enumerate(self._all_expert_weights):
             for t_idx, t in enumerate(layer_tensors):
                 nbytes_per_expert = t.nbytes // self._num_local_experts
+                self._published_ptrs[(layer_idx, t_idx)] = (t.data_ptr(), t.nbytes)
                 local_meta[(layer_idx, t_idx)] = (
                     t.data_ptr(),
                     nbytes_per_expert,
                     self._cuda_device_id,
+                    t.nbytes,
+                    t.shape[0],
                 )
+        self._report_allocation_extents()
 
-        # Per-rank map: (layer_idx, tensor_idx) -> (base_ptr, bytes_per_expert, dev_id).
+        # Per-rank map: (layer_idx, tensor_idx) ->
+        # (base_ptr, bytes_per_expert, dev_id, total_bytes, num_rows).
         # add_recv uses base_ptr + src_row * bytes_per_expert to compute
-        # the remote RDMA address for each expert.
-        gathered_meta: list[dict[tuple[int, int], tuple[int, int, int]] | None] = [
-            None
-        ] * self._world_size
+        # the remote RDMA address for each expert, and total_bytes to confirm
+        # that address is still inside what the peer registered.
+        gathered_meta: list[
+            dict[tuple[int, int], tuple[int, int, int, int, int]] | None
+        ] = [None] * self._world_size
         torch.distributed.all_gather_object(
             gathered_meta, local_meta, group=self._cpu_group
         )
@@ -541,17 +731,128 @@ class NixlEplbCommunicator(EplbCommunicator):
                     f"local={sorted(local_keys)}, peer={sorted(peer_keys)}"
                 )
             for key in local_keys:
-                _, local_stride, _ = local_meta[key]
-                _, peer_stride, _ = peer_meta[key]
+                _, local_stride, _, _, local_rows = local_meta[key]
+                _, peer_stride, _, _, peer_rows = peer_meta[key]
                 if local_stride != peer_stride:
                     raise RuntimeError(
                         f"NIXL EPLB nbytes_per_expert mismatch for {key} "
                         f"with rank {peer}: "
                         f"local={local_stride}, peer={peer_stride}"
                     )
+                if local_rows != peer_rows:
+                    raise RuntimeError(
+                        f"NIXL EPLB expert row count mismatch for {key} "
+                        f"with rank {peer}: "
+                        f"local={local_rows}, peer={peer_rows}. Rows index the "
+                        f"remote read, so a peer holding fewer rows than this "
+                        f"rank expects is read past the end of its tensor."
+                    )
             self._remote_send_meta[peer] = peer_meta
 
+    def _warm_peer_transfers(self) -> None:
+        """Read one small block from every peer before the real resharding.
+
+        Every stall on this platform happens on layer 0 and nowhere else: all
+        286 stall reports in a full run name that layer, and no rank ever logs
+        a read for layer 1. So what breaks is the first batch of transfers a
+        freshly built communicator issues, which is the same shape as the RCCL
+        communicators that need a deferred warm up here.
+
+        This issues one READ per peer, of one expert's worth of bytes into the
+        scratch buffer, and waits for it. If first use is the problem, the
+        warm up takes the hit on a single descriptor that no result depends on,
+        and the resharding behind it starts on a connection that has already
+        carried traffic.
+
+        A failure here is logged and swallowed. The warm up exists to make the
+        real transfers work, so it must not be the thing that breaks them, and
+        it reads into scratch so a half finished read costs nothing.
+        """
+        if os.getenv("VLLM_EEP_WARM_NIXL_TRANSFERS") != "1":
+            return
+        if not self._remote_agents or not self._expert_buffer:
+            return
+
+        timeout = float(os.getenv("VLLM_EEP_WARM_NIXL_TIMEOUT_S") or 60.0)
+        dst = self._expert_buffer[0]
+        started = time.perf_counter()
+        entries: list[tuple[int, tuple[int, int, int]]] = []
+
+        for peer in sorted(self._remote_agents):
+            base, stride, dev, _, _ = self._remote_send_meta[peer][(0, 0)]
+            size = min(stride, dst.nbytes)
+            try:
+                handles = self._create_peer_xfer(
+                    peer,
+                    [(dst.data_ptr(), size, self._cuda_device_id)],
+                    [(base, size, dev)],
+                )
+                self._nixl_wrapper.transfer(handles[2])
+            except Exception as exc:
+                logger.warning(
+                    "[EEP-DEBUG] warm up READ from rank %s could not be issued: %s: %s",
+                    peer,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
+            entries.append((peer, handles))
+
+        pending = {handles[2]: peer for peer, handles in entries}
+        while pending:
+            for handle, peer in list(pending.items()):
+                state = self._nixl_wrapper.check_xfer_state(handle)
+                if state == "DONE":
+                    del pending[handle]
+                elif state != "PROC":
+                    logger.warning(
+                        "[EEP-DEBUG] warm up READ from rank %s reported state=%s",
+                        peer,
+                        state,
+                    )
+                    del pending[handle]
+            if pending and time.perf_counter() - started > timeout:
+                logger.warning(
+                    "[EEP-DEBUG] warm up READ still in PROC after %.0f s for "
+                    "rank(s) %s, going ahead anyway",
+                    timeout,
+                    sorted(set(pending.values())),
+                )
+                break
+            if pending:
+                time.sleep(0.0005)
+
+        for _, handles in entries:
+            local_h, remote_h, xfer_h = handles
+            with contextlib.suppress(Exception):
+                self._nixl_wrapper.release_xfer_handle(xfer_h)
+            with contextlib.suppress(Exception):
+                self._nixl_wrapper.release_dlist_handle(local_h)
+            with contextlib.suppress(Exception):
+                self._nixl_wrapper.release_dlist_handle(remote_h)
+
+        logger.warning(
+            "[EEP-DEBUG] warmed %d peer transfer(s) in %.3f s",
+            len(entries),
+            time.perf_counter() - started,
+        )
+
     def _wait_for_all_transfers(self, handles: list[int]) -> None:
+        """Wait for every READ issued for this layer to report DONE.
+
+        The wait is bounded. A transfer only leaves this loop by reaching DONE
+        or by reporting a state that is neither DONE nor PROC, and a peer whose
+        GPU faults never does either: its handle stays in PROC for good, so the
+        survivors spin here until the test itself is killed. On MI355 two ranks
+        faulted with `Memory access fault by GPU node-N` during the expert
+        reshuffle and the rest of the ranks sat in this loop for the whole
+        780 s budget without printing a thing.
+        """
+        timeout = float(os.getenv("VLLM_EPLB_NIXL_XFER_TIMEOUT_S") or 300.0)
+        report_every = float(os.getenv("VLLM_EPLB_NIXL_XFER_REPORT_S") or 0)
+        next_report = report_every
+        started = time.perf_counter()
+        total = len(handles)
         pending = set(handles)
         while pending:
             completed: list[int] = []
@@ -565,6 +866,41 @@ class NixlEplbCommunicator(EplbCommunicator):
             for handle in completed:
                 pending.remove(handle)
             if pending:
+                elapsed = time.perf_counter() - started
+                if report_every > 0 and elapsed > next_report:
+                    # A reshuffle that normally costs under 5 s was measured at
+                    # 260 s with every rank sitting in this loop, and a single
+                    # duration at the end cannot say whether one layer stalled
+                    # or every layer crawled.
+                    next_report += report_every
+                    logger.warning(
+                        "[EEP-DEBUG] layer %s still waiting after %.0f s: "
+                        "%d of %d transfer(s) in PROC",
+                        self._layer_idx,
+                        elapsed,
+                        len(pending),
+                        total,
+                    )
+                    if os.getenv("VLLM_EEP_DEBUG_MAPPINGS") == "1":
+                        # The snapshot taken before this wait misses anything
+                        # UCX maps while it is performing the read, and that is
+                        # the window the fault falls in: not one of the six
+                        # fault addresses of the last run was inside any range
+                        # known at issue time. Re-reading here puts those
+                        # mappings on the record while the stall is live.
+                        from vllm.distributed.elastic_ep import rocm_debug
+
+                        self._mappings = rocm_debug.log_new_device_mappings(
+                            f"layer {self._layer_idx} stalled", self._mappings
+                        )
+                if timeout > 0 and elapsed > timeout:
+                    raise RuntimeError(
+                        f"NIXL EPLB transfers for layer {self._layer_idx} did "
+                        f"not finish within {timeout:.0f} s: "
+                        f"{len(pending)} of {total} still in PROC. A peer whose "
+                        f"GPU faulted leaves its READ in PROC forever, so this "
+                        f"rank cannot tell a slow transfer from a dead peer."
+                    )
                 time.sleep(0.0005)
 
     def _create_peer_xfer(
@@ -626,9 +962,58 @@ class NixlEplbCommunicator(EplbCommunicator):
             "set_transfer_context() must be called before execute() "
             "if any add_recv() calls were made"
         )
+        trace = os.getenv("VLLM_EEP_DEBUG_TRANSFER_TRACE") == "1"
+        if trace:
+            # Diagnostic only. A rank dies somewhere in here with no Python
+            # frames at all, and the survivors only report
+            # NIXL_ERR_REMOTE_DISCONNECT, which is the victim's view. The last
+            # line the dying rank printed is the only thing that says how far
+            # it got, and whether it was the wait or the barrier.
+            logger.warning(
+                "[EEP-DEBUG] layer %s: waiting for %d expert transfer(s)",
+                self._layer_idx,
+                len(self._xfer_entries),
+            )
+        # Before the wait, never after: the fault ends the process.
+        for (layer, peer), span in self._desc_ranges.items():
+            (
+                local_lo,
+                local_hi,
+                remote_lo,
+                remote_hi,
+                remote_dev,
+                reads,
+                valid_lo,
+                valid_hi,
+            ) = span
+            logger.warning(
+                "[EEP-DEBUG] layer %s reads %d expert(s) from rank %s on "
+                "device %s: remote 0x%x-0x%x of registered 0x%x-0x%x, "
+                "local 0x%x-0x%x",
+                layer,
+                reads,
+                peer,
+                remote_dev,
+                remote_lo,
+                remote_hi,
+                valid_lo,
+                valid_hi,
+                local_lo,
+                local_hi,
+            )
+        if os.getenv("VLLM_EEP_DEBUG_MAPPINGS") == "1":
+            from vllm.distributed.elastic_ep import rocm_debug
+
+            self._mappings = rocm_debug.log_new_device_mappings(
+                f"layer {self._layer_idx}", self._mappings
+            )
         try:
             self._wait_for_all_transfers([x[2] for x in self._xfer_entries])
-
+            if trace:
+                logger.warning(
+                    "[EEP-DEBUG] layer %s: transfers done, entering barrier",
+                    self._layer_idx,
+                )
             self._post_read_barrier()
         finally:
             for local_h, remote_h, xfer_h in self._xfer_entries:
@@ -639,6 +1024,7 @@ class NixlEplbCommunicator(EplbCommunicator):
                 with contextlib.suppress(Exception):
                     self._nixl_wrapper.release_dlist_handle(remote_h)
             self._xfer_entries.clear()
+            self._desc_ranges.clear()
             self._expert_to_src_row = None
             self._layer_idx = None
 

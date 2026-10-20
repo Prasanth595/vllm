@@ -613,8 +613,11 @@ class SpeculativeConfig:
     usage."""
 
     dspark_draft_topk: int | None = Field(default=None, ge=1)
-    """For Qwen3 DSpark drafting, evaluate the Markov projection only for the
-    top-k base-logit candidates. Requires draft tensor parallel size 1."""
+    """For Qwen3 DSpark drafting, evaluate the Markov projection on the union
+    of the top-k base-logit and top-k Markov-bias candidates. Markov candidate
+    IDs are computed once at model load, storing k IDs per target token.
+    Unset keeps the full vocabulary.
+    Requires draft tensor parallel size 1."""
 
     fly_window_size: int | None = Field(default=None, ge=1)
     """Number of subsequent native acceptance decisions checked by FLy.

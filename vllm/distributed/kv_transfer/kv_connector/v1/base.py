@@ -195,6 +195,12 @@ class KVConnectorBase_V1(ABC):
         return False
 
     @property
+    def external_load_alignment(self) -> int | None:
+        """Token multiple a trimmed external hit may end on, or None if the
+        connector loads only whole hits."""
+        return None
+
+    @property
     def requires_kv_delivery(self) -> bool:
         """Whether this connector hands off KV that must be reliably delivered.
 

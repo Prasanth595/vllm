@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import math
 from collections.abc import Iterable
 from functools import cached_property
 from typing import Any
@@ -69,6 +70,15 @@ class OffloadingConnector(KVConnectorBase_V1, SupportsHMA):
     def scheduler(self) -> OffloadingConnectorScheduler:
         assert self.connector_scheduler is not None
         return self.connector_scheduler
+
+    @property
+    def external_load_alignment(self) -> int:
+        return math.lcm(
+            *(
+                group.tokens_per_chunk
+                for group in self.scheduler.config.kv_group_configs
+            )
+        )
 
     @property
     def requires_kv_delivery(self) -> bool:

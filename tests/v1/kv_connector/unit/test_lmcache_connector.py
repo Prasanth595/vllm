@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -71,6 +72,89 @@ def mock_connector():
     )
 
     return connector
+
+
+class TestUpdateStateAfterAlloc:
+    @pytest.mark.parametrize(
+        "engine,expected",
+        [
+            (SimpleNamespace(_lmcache_chunk_size=256, load_specs={}), 256),
+            (SimpleNamespace(_lmcache_chunk_size=256), None),
+        ],
+        ids=["chunk", "no-load-specs"],
+    )
+    def test_external_load_alignment(self, engine, expected):
+        connector = SimpleNamespace(_lmcache_engine=engine)
+
+        assert LMCacheConnectorV1.external_load_alignment.fget(connector) == expected
+
+    @pytest.mark.parametrize(
+        "vllm_cached,lmcache_cached,num_external,expected",
+        [
+            (0, 1024, 1024, 1024),
+            (0, 1200, 1199, 1200),
+            (0, 1024, 768, 768),
+            (256, 1024, 512, 768),
+            (0, 1024, 0, 1024),
+        ],
+        ids=["whole-hit", "whole-prompt", "shorter", "after-local-hit", "not-chosen"],
+    )
+    def test_loads_the_accepted_prefix(
+        self, mock_connector, vllm_cached, lmcache_cached, num_external, expected
+    ):
+        load_spec = SimpleNamespace(
+            vllm_cached_tokens=vllm_cached, lmcache_cached_tokens=lmcache_cached
+        )
+        mock_connector._lmcache_engine.load_specs = {"r": load_spec}
+        request = SimpleNamespace(request_id="r", num_tokens=1200)
+
+        LMCacheConnectorV1.update_state_after_alloc(
+            mock_connector, request, MagicMock(), num_external
+        )
+
+        assert load_spec.lmcache_cached_tokens == expected
+        engine = mock_connector._lmcache_engine
+        engine.update_state_after_alloc.assert_called_once_with(request, num_external)
+
+
+class TestMPUpdateStateAfterAlloc:
+    @pytest.mark.parametrize(
+        "vllm_hit_blocks,num_external,expected_blocks,expected_freed",
+        [
+            (0, 64, 4, None),
+            (0, 32, 2, (32, 64)),
+            (1, 16, 2, (32, 64)),
+            (0, 0, 4, None),
+        ],
+        ids=["whole-hit", "shorter", "after-local-hit", "not-chosen"],
+    )
+    def test_releases_locks_past_the_accepted_prefix(
+        self, vllm_hit_blocks, num_external, expected_blocks, expected_freed
+    ):
+        from vllm.distributed.kv_transfer.kv_connector.v1.lmcache_mp_connector import (
+            LMCacheMPConnectorUpstream,
+        )
+
+        tracker = MagicMock(
+            allocated_block_ids=[],
+            num_vllm_hit_blocks=vllm_hit_blocks,
+            num_lmcache_hit_blocks=4,
+            all_token_ids=list(range(80)),
+        )
+        connector = MagicMock(vllm_block_size=16)
+        connector._get_request_tracker.return_value = tracker
+        blocks = MagicMock(get_block_ids=MagicMock(return_value=([],)))
+
+        LMCacheMPConnectorUpstream.update_state_after_alloc(
+            connector, SimpleNamespace(request_id="r"), blocks, num_external
+        )
+
+        assert tracker.num_lmcache_hit_blocks == expected_blocks
+        freed = [
+            (call.kwargs["start"], call.kwargs["end"])
+            for call in connector.scheduler_adapter.free_lookup_locks.call_args_list
+        ]
+        assert freed == ([expected_freed] if expected_freed else [])
 
 
 class TestGetKVConnectorKVCacheEvents:

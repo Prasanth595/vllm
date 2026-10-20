@@ -293,10 +293,8 @@ fn collect_generate(
     }: ResponseOptions,
     mm_placeholders: Option<MultiModalPlaceholders>,
 ) -> Result<GenerateResponse, ApiError> {
-    if let FinishReason::Error(Some(error)) = &collected.finish_reason
-        && error.retryable
-    {
-        return Err(engine_error(Some(error)));
+    if let FinishReason::Error(error) = &collected.finish_reason {
+        return Err(engine_error(error.as_deref()));
     }
     let logprobs = if include_logprobs {
         let logprobs = collected.logprobs.as_ref().ok_or_else(|| {

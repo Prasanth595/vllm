@@ -10,7 +10,12 @@ import numpy as np
 import torch
 from typing_extensions import TypeVar
 
-from vllm.exceptions import GenerationError, RetryableRequestError
+from vllm.exceptions import (
+    GenerationError,
+    RetryableRequestError,
+    VLLMError,
+    VLLMValidationError,
+)
 from vllm.logger import init_logger
 from vllm.logprobs import PromptLogprobs, SampleLogprobs
 from vllm.lora.request import LoRARequest
@@ -21,13 +26,21 @@ logger = init_logger(__name__)
 
 @dataclass(frozen=True)
 class RequestError:
-    """A request-level error that does not mark the engine as unhealthy."""
+    """A request-level error that does not mark the engine as unhealthy.
+
+    `invalid_request` marks an error caused by the request itself, reported to
+    the client as a validation error (HTTP 400). It takes precedence over
+    `retryable`, since sending the same request again cannot succeed.
+    """
 
     code: str
     message: str
     retryable: bool = False
+    invalid_request: bool = False
 
-    def to_exception(self) -> GenerationError:
+    def to_exception(self) -> VLLMError:
+        if self.invalid_request:
+            return VLLMValidationError(self.message)
         if self.retryable:
             return RetryableRequestError(self.message)
         return GenerationError(self.message)

@@ -121,10 +121,12 @@ pub fn chat_submit_error(context: &'static str, error: vllm_chat::Error) -> ApiE
     server_error!("{}: {}", context, error.to_report_string())
 }
 
-/// Classify an engine-reported request failure: a retryable error (e.g. a
-/// paused engine's rejection) maps to HTTP 503, anything else to a 500.
+/// Classify an engine-reported request failure: an invalid request maps to
+/// HTTP 400 with the engine's message, a retryable error (e.g. a paused
+/// engine's rejection) to 503, and anything else to a 500.
 pub fn engine_error(error: Option<&RequestError>) -> ApiError {
     match error {
+        Some(error) if error.invalid_request => invalid_request!("{}", error.message),
         Some(error) if error.retryable => ApiError::ServiceUnavailable {
             code: error.code.clone(),
             message: error.message.clone(),
@@ -334,5 +336,38 @@ mod tests {
         assert_eq!(api_error.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
         let response = api_error.to_error_response();
         assert!(response.error.message.starts_with("failed to submit completion request:"));
+    }
+
+    #[test]
+    fn engine_errors_map_to_status_by_kind() {
+        let error = |retryable, invalid_request| RequestError {
+            code: "engine_code".to_string(),
+            message: "prompt does not fit the engine".to_string(),
+            retryable,
+            invalid_request,
+        };
+
+        let api_error = engine_error(Some(&error(false, true)));
+        assert_eq!(api_error.status_code(), StatusCode::BAD_REQUEST);
+        let response = api_error.to_error_response();
+        assert_eq!(response.error.error_type, "invalid_request_error");
+        assert_eq!(response.error.message, "prompt does not fit the engine");
+        // Sending an invalid request again cannot succeed, whatever else it says.
+        assert_eq!(
+            engine_error(Some(&error(true, true))).status_code(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            engine_error(Some(&error(true, false))).status_code(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        for error in [Some(error(false, false)), None] {
+            let api_error = engine_error(error.as_ref());
+            assert_eq!(api_error.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(
+                api_error.to_error_response().error.message,
+                "Internal server error"
+            );
+        }
     }
 }

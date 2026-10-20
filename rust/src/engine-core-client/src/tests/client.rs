@@ -2904,6 +2904,7 @@ fn python_msgpack_fixtures_match_rust_encoding() {
                                 code: "engine_paused",
                                 message: "Generation is paused.",
                                 retryable: true,
+                                invalid_request: false,
                             },
                         ),
                     },

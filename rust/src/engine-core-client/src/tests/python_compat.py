@@ -99,6 +99,7 @@ class RequestError:
     code: str
     message: str
     retryable: bool = False
+    invalid_request: bool = False
 
 
 class EngineCoreOutput(

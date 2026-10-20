@@ -14,6 +14,9 @@ layer loop. The TP all-reduces run in-kernel over peer memory.
   MXFP4 W_UV, the sigmoid gate). At DCP1 every rank holds the whole KV: M1a writes
   its 12 heads' query directly and M1b reads AITER's output as is, with no gather
   and no combine.
+- **FFN layers M1 cannot serve** (a non-fp8 KV cache, `VLLM_ROCM_USE_AITER_FP4BMM`
+  unset, or MLA weights M1 does not read): vLLM's AttnRes and MLA attention ops
+  write o_proj's input, then K2.
 - **K2**: o_proj + all-reduce + MLP AttnRes, then the latent MoE (router,
   top-16, MXFP4 experts, shared experts, latent all-reduce + RMSNorm, up_proj,
   final all-reduce).
@@ -36,10 +39,15 @@ There are no other options. `decode_backend=auto` (the default) runs vLLM's deco
 
 ## Supported deployments
 
-TP8 on MI355X with all 256 CUs, decode context parallel 1 or 8 (interleave 1 under
-DCP8), speculative decoding with at most 15 speculative tokens, Model Runner V2,
-an fp8 KV cache, MLA's W_UK / W_UV as AITER MXFP4 bmms
-(`VLLM_ROCM_USE_AITER_FP4BMM=1`), BF16 conv / FP32 recurrent KDA states.
+TP8 on MI355X with all 256 CUs, decode context parallel 1 or 8, speculative
+decoding with at most 15 speculative tokens, Model Runner V2, BF16 conv / FP32
+recurrent KDA states. M1 assumes no KV cache interleave (it writes the slots vLLM
+maps), but at DCP8 vLLM's AITER MLA backend serves DSpark at interleave 1 only.
+
+M1 also needs an fp8 KV cache and MLA's W_UK / W_UV as AITER MXFP4 bmms
+(`VLLM_ROCM_USE_AITER_FP4BMM=1`). Without them the MLA layers run vLLM's
+attention ops, then K2, and startup logs why. The KDA layers run K1 and K2 either
+way.
 
 If you request the specialized decode for anything else, startup fails with one
 `ValueError` that lists every unsupported setting:
@@ -48,13 +56,14 @@ If you request the specialized decode for anything else, startup fails with one
   context parallelism, EPLB, DBO, LoRA, KV connectors, routed-expert capture,
   sleep mode, CPU weight offload, weight updates, no speculative decoding,
   adaptive verification, dynamic speculative decoding, ReplaySSM / RecoverSSM,
-  a non-fp8 KV cache, MLA without AITER's MXFP4 bmms, the V1 model runner,
-  `STOCK_TORCH_COMPILE`, another model's shapes, another GPU.
+  the V1 model runner, `STOCK_TORCH_COMPILE`, another model's shapes, another
+  GPU.
 - **Loaded weights, when the model state builds the executor:** each kernel
-  layer's weight shapes and dtypes, the MoE backend (`AITER_MXFP4_BF16`, K3
-  SiTU), and each MLA layer's shapes, gate, DCP setup, fp8 cache and bmm weights.
-- **KV caches, at every bind:** the KDA state dtypes and layout, the MLA cache's
-  fp8 dense rows.
+  layer's weight shapes and dtypes and the MoE backend (`AITER_MXFP4_BF16`, K3
+  SiTU). Each MLA layer's shapes, gate, DCP setup, fp8 cache and bmm weights
+  decide M1 or vLLM's ops (not a refusal).
+- **KV caches, at every bind:** the KDA state dtypes and layout, and with M1 the
+  MLA cache's fp8 dense rows.
 
 Every TP rank agrees on each verdict before anything collective runs.
 
@@ -62,9 +71,9 @@ Every TP rank agrees on each verdict before anything collective runs.
 
 `plan()` runs once per step. It picks the kernels for a pure spec-verify step of
 whole uniform requests whose width is one of the built widths: every multiple of
-`num_speculative_tokens + 1` up to 16 rows. The MLA layers' metadata must agree
-(pure decode, the same width, AITER's non-Gluon decode). Every other step runs
-vLLM's layers: prefill, mixed, wider and PIECEWISE steps.
+`num_speculative_tokens + 1` up to 16 rows. With M1 the MLA layers' metadata must
+agree (pure decode, the same width, AITER's non-Gluon decode). Every other step
+runs vLLM's layers: prefill, mixed, wider and PIECEWISE steps.
 
 Under FULL graphs the plan is baked in at capture. vLLM's capture sizes are not
 changed. A replay with fewer requests than its graph pads whole requests. Those
@@ -74,9 +83,9 @@ serve them like real ones. To capture every width exactly, pass them in
 
 Every launch's mailbox tag is the step epoch and a slot: K1 and M1a use the layer
 index, K2 (and the M1b it runs) 128 + the layer index. The peer buffer holds K2's
-regions, then M1a's gathered query, then M1b's partials (both DCP8 only). A region
-is reused by the next layer only after K2's all-reduce, which every rank reaches
-past its M1b.
+regions, then M1a's gathered query, then M1b's partials (both M1 at DCP8 only). A
+region is reused by the next layer only after K2's all-reduce, which every rank
+reaches past its M1b.
 
 ## Fail-stop
 
@@ -111,7 +120,8 @@ it to `forward_mqa` in place of the backend's padding copy.
 hooks.py         SpecializedDecodeMixin: the model-side hooks
 model_state.py   KimiK3ModelState: builds the executor after load, binds KV caches
 runtime/
-    __init__.py  DecodeConfig, specialized_decode_config(), unsupported()
+    __init__.py  DecodeConfig, specialized_decode_config(), unsupported(),
+                 m1_reasons()
     decode.py    SpecializedDecode: plan() -> Step, Step.layer(i), prepare_kv(),
                  after_step()
     guards.py    weight and KV cache refusals, the fail-stop watch

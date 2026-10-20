@@ -31,10 +31,12 @@ from vllm.models.kimi_k3.amd.specialized_decode.runtime import (
 from vllm.models.kimi_k3.amd.specialized_decode.runtime.guards import (
     FailStop,
     cache_reasons,
+    mla_weight_reasons,
     weight_reasons,
 )
 from vllm.models.kimi_k3.amd.specialized_decode.runtime.layers import (
     FfnLayer,
+    MlaOpsLayer,
     WholeLayer,
     compile_build,
 )
@@ -43,7 +45,7 @@ from vllm.models.kimi_k3.amd.specialized_decode.runtime.runner import MonoRunner
 
 logger = init_logger(__name__)
 
-Kernel = WholeLayer | FfnLayer
+Kernel = WholeLayer | FfnLayer | MlaOpsLayer
 
 
 class Step(NamedTuple):
@@ -123,19 +125,31 @@ class SpecializedDecode:
             for i, kind in layer_kinds(backbone.config).items()
             if backbone.start_layer <= i < backbone.end_layer
         }
-        runner = self.runner = MonoRunner(next(backbone.parameters()).device)
+        ffn = [i for i, kind in kinds.items() if kind == FFN]
+        m1 = config.m1 and bool(ffn)
+        if m1:
+            why = mla_weight_reasons(backbone)
+            m1 = tp_agree(not why, tp.cpu_group)
+            if not m1:
+                logger.info(
+                    "Kimi-K3 specialized decode: the MLA layers run vLLM's "
+                    "attention ops, then K2 (M1 does not support: %s)",
+                    "; ".join(why) if why else "another TP rank's MLA layers",
+                )
+        runner = self.runner = MonoRunner(next(backbone.parameters()).device, m1=m1)
         runner.num_spec = config.q - 1
+        runner.interleave = config.interleave
         runner.first_layer = min(kinds)
         whole = [i for i, kind in kinds.items() if kind == WHOLE]
         runner.kda_prefix = backbone.layers[whole[0]].self_attn.prefix
-        ffn = [i for i, kind in kinds.items() if kind == FFN]
-        if ffn:
-            # the MLA layers' metadata: their MLAAttention's
+        if m1:
+            # the M1 layers' metadata: their MLAAttention's
             wrapper = backbone.layers[ffn[0]].self_attn.mla_attn
             runner.mla_prefix = wrapper.mla_attn.layer_name
+        mla_kernel = FfnLayer if m1 else MlaOpsLayer
         self.kernels: dict[int, dict[int, Kernel]] = {
             w: {
-                i: (WholeLayer if kind == WHOLE else FfnLayer)(
+                i: (WholeLayer if kind == WHOLE else mla_kernel)(
                     backbone.layers[i], runner, w
                 )
                 for i, kind in kinds.items()
@@ -161,9 +175,10 @@ class SpecializedDecode:
         # (data_ptr, numel) of the first KDA layer's state prepare_kv bound
         self._kv: tuple[int, int] | None = None
         logger.info(
-            "Kimi-K3 specialized decode: %d layers, widths %s, %d builds; other "
-            "steps run vLLM's decode",
+            "Kimi-K3 specialized decode: %d layers (MLA: %s), widths %s, %d "
+            "builds; other steps run vLLM's decode",
             len(kinds),
+            "M1" if m1 else "vLLM's ops",
             list(config.widths),
             len(builds),
         )

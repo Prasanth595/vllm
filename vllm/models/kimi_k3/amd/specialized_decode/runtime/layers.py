@@ -10,6 +10,8 @@ prefix_delta)``.
 - ``FfnLayer`` (MLA layers): M1a (AttnRes, the query prologue, the KV write
   and, at DCP8, the query gather), AITER's decode, M1b (at DCP8 the LSE
   combine, W_UV and the gate), then K2.
+- ``MlaOpsLayer`` (MLA layers M1 cannot serve, ``m1_reasons``): vLLM's AttnRes
+  and MLA attention ops, then K2.
 
 Weights are views of the loaded parameters, taken at every launch.
 """
@@ -254,8 +256,9 @@ class FfnLayer(_Layer):
         from vllm.v1.attention.backends.mla import rocm_aiter_mla as am
 
         n = self.runner.dcp * NH
-        # KV interleave 1: unsupported() refuses any other at DCP8
-        asm = am._asm_dcp_verify_configured(self.runner.dcp, 1, True)
+        asm = am._asm_dcp_verify_configured(
+            self.runner.dcp, self.runner.interleave, True
+        )
         if (
             not asm
             or self.runner.num_spec + 1 < am._MIN_CPRR_QLEN
@@ -355,4 +358,31 @@ class FfnLayer(_Layer):
             **runner.peer_args(),
         )
         out = _k2(layer, runner, core, prefix_sum, block_residual)
+        return prefix_sum, block_residual, out
+
+
+class MlaOpsLayer(_Layer):
+    """An MLA layer whose attention runs as vLLM's ops (o_proj's input), then
+    K2: for deployments M1 cannot serve."""
+
+    def launch(self, step: "Step", positions, prefix_sum, block_residual, prefix_delta):
+        from vllm.models.kimi_k3.amd.linear import _apply_attn_res
+
+        layer = self.layer
+        if self.first:
+            self.runner.step_begin()
+        hidden_states = _apply_attn_res(
+            prefix_sum,
+            block_residual,
+            layer.self_attention_res_proj,
+            layer.self_attention_res_norm,
+            layer.prev_valid_blocks,
+            delta=prefix_delta,
+            output_norm=layer.input_layernorm,
+            quant_key=layer.self_attn.get_input_quant_key(),
+        )
+        core = layer.self_attn.mla_attn.forward(
+            positions, hidden_states, skip_o_proj=True
+        )
+        out = _k2(layer, self.runner, core, prefix_sum, block_residual)
         return prefix_sum, block_residual, out

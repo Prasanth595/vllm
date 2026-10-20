@@ -19,15 +19,9 @@ from vllm.models.kimi_k3.amd.specialized_decode.runtime import (
 MLA_HEADS, MLA_Q, MLA_KV, MLA_NOPE, MLA_ROPE, MLA_V = 12, 1536, 512, 128, 64, 128
 
 
-def weight_reasons(model) -> list[str]:
-    """``model``: the loaded ``KimiLinearModel``; every kernel layer's weights as
-    the kernels read them, and the MoE backend that lays them out."""
-    from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import Mxfp4MoeBackend
-    from vllm.models.kimi_k3.amd.specialized_decode.mono.attention import back, kda
-    from vllm.models.kimi_k3.amd.specialized_decode.mono.stages import moe
-
-    reasons: list[str] = []
-    bf, f32 = torch.bfloat16, torch.float32
+def _need(reasons: list[str]):
+    """``need(name, t, shape, dtype)``: appends to ``reasons`` unless ``t`` is
+    a contiguous ``shape`` ``dtype`` tensor."""
 
     def need(name, t, shape, dtype):
         if t is None:
@@ -39,6 +33,20 @@ def weight_reasons(model) -> list[str]:
                 f" kernel reads contiguous {shape} {dtype}"
             )
 
+    return need
+
+
+def weight_reasons(model) -> list[str]:
+    """``model``: the loaded ``KimiLinearModel``; every kernel layer's weights as
+    K1 and K2 read them, and the MoE backend that lays them out. The MLA layers'
+    attention is ``mla_weight_reasons``'."""
+    from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import Mxfp4MoeBackend
+    from vllm.models.kimi_k3.amd.specialized_decode.mono.attention import back, kda
+    from vllm.models.kimi_k3.amd.specialized_decode.mono.stages import moe
+
+    reasons: list[str] = []
+    bf, f32 = torch.bfloat16, torch.float32
+    need = _need(reasons)
     kinds = layer_kinds(model.config)
     if not kinds:
         return ["no layer has an AttnRes latent MoE"]
@@ -87,7 +95,6 @@ def weight_reasons(model) -> list[str]:
         need(f"{p} self_attention_res_proj", layer.self_attention_res_proj.weight,
              (1, H), bf)  # fmt: skip
         if kind == FFN:
-            reasons += _mla_reasons(p, layer.self_attn.mla_attn, need)
             continue
         a = layer.self_attn
         if a.local_num_heads != kda.NH or a.head_dim != kda.HD or a.conv_size != 4:
@@ -99,6 +106,17 @@ def weight_reasons(model) -> list[str]:
         need(f"{p} conv1d", a.conv1d.weight.view(-1, 4), (kda.QKV, 4), f32)
         need(f"{p} A_log", a.A_log.view(-1), (kda.NH,), f32)
         need(f"{p} dt_bias", a.dt_bias.view(-1), (kda.PROJ,), f32)
+    return reasons
+
+
+def mla_weight_reasons(model) -> list[str]:
+    """Why the loaded MLA layers cannot run M1 (empty: they can). Not a refusal:
+    those layers run vLLM's attention ops instead, then K2."""
+    reasons: list[str] = []
+    for i, kind in layer_kinds(model.config).items():
+        if kind == FFN and model.start_layer <= i < model.end_layer:
+            w = model.layers[i].self_attn.mla_attn
+            reasons += _mla_reasons(f"layer {i}", w, _need(reasons))
     return reasons
 
 

@@ -297,18 +297,6 @@ class CoreEngineProcManager:
         # the config before each proc.start() works because the spawn method
         # pickles process args at start() time, sequentially per rank.
         user_assigned_gpu_ids = vllm_config.parallel_config.assigned_physical_gpu_ids
-
-        # CPU workers read their NUMA node from the device-control env var.
-        # Resolve all ranks before mutating it, or a later rank would read an
-        # earlier rank's value as an already-narrowed device list.
-        cpu_physical_gpu_ids_by_rank = (
-            compute_cpu_physical_gpu_ids_by_dp_rank(
-                vllm_config, local_dp_ranks, user_assigned_gpu_ids
-            )
-            if is_dp and current_platform.is_cpu()
-            else {}
-        )
-
         try:
             with _configure_uniproc_startup_threads(executor_class, local_engine_count):
                 for proc, local_dp_rank in zip(self.processes, local_dp_ranks):
@@ -318,11 +306,7 @@ class CoreEngineProcManager:
                     needs_device_env_isolation = not (
                         current_platform.is_cuda_alike() or current_platform.is_xpu()
                     )
-                    if is_dp and current_platform.is_cpu():
-                        set_cpu_visible_memory_nodes_env_var_for_dp_rank(
-                            vllm_config, cpu_physical_gpu_ids_by_rank[local_dp_rank]
-                        )
-                    elif is_dp and (
+                    if is_dp and (
                         needs_device_env_isolation
                         or vllm_config.parallel_config.use_ray
                     ):
@@ -419,38 +403,6 @@ class SignalCallback:
     def stop(self):
         self._stopped = True
         self._event.set()
-
-
-def compute_cpu_physical_gpu_ids_by_dp_rank(
-    vllm_config: VllmConfig,
-    local_dp_ranks: list[int],
-    user_assigned_gpu_ids: list[int] | None = None,
-) -> dict[int, list[int]]:
-    """Resolve every local DP rank's NUMA node ids before any env var mutation."""
-    world_size = vllm_config.parallel_config.world_size
-    local_world_size = vllm_config.parallel_config.local_world_size
-    evar = current_platform.device_control_env_var
-    return {
-        local_dp_rank: get_physical_gpu_ids_for_local_dp_rank(
-            evar,
-            local_dp_rank,
-            world_size,
-            local_world_size,
-            user_assigned_gpu_ids=user_assigned_gpu_ids,
-        )
-        for local_dp_rank in local_dp_ranks
-    }
-
-
-def set_cpu_visible_memory_nodes_env_var_for_dp_rank(
-    vllm_config: VllmConfig, physical_gpu_ids: list[int]
-) -> None:
-    """Set this rank's device-control env var (read by CPU workers) and
-    assigned_physical_gpu_ids."""
-    vllm_config.parallel_config.assigned_physical_gpu_ids = physical_gpu_ids
-    os.environ[current_platform.device_control_env_var] = ",".join(
-        str(i) for i in physical_gpu_ids
-    )
 
 
 def set_assigned_physical_gpu_ids_for_dp_rank(

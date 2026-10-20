@@ -4,7 +4,7 @@ meta:
   provider: "Moonshot AI"
   description: "Pre-release 2.8T-parameter native multimodal MoE with Kimi Delta Attention, Gated MLA, Attention Residuals, and a 1M-token context window"
   date_added: 2026-07-27
-  date_updated: 2026-10-18
+  date_updated: 2026-10-20
   tasks:
     - multimodal
     - text
@@ -13,6 +13,8 @@ meta:
     - "moonshotai/Kimi-K2.6"
     - "moonshotai/Kimi-K2.5"
   default_hardware: b300
+  default_variant:
+    ascend_950dt_8x: ascend_w4a8
   hardware:
     h200: verified
     b200: verified
@@ -21,6 +23,7 @@ meta:
     gb300: verified
     mi355x: verified
     ascend_910c: verified
+    ascend_950dt_8x: supported
 
 model:
   model_id: "moonshotai/Kimi-K3"
@@ -86,6 +89,10 @@ features:
         args:
           - "--speculative-config"
           - '{"method":"dspark","model":"RedHatAI/Kimi-K3-speculator.dspark","num_speculative_tokens":7,"enforce_eager":true}'
+      ascend_950dt_8x:
+        args:
+          - "--speculative-config"
+          - '{"method":"dspark","model":"RadixArk/Kimi-K3-DSpark","num_speculative_tokens":7,"draft_tensor_parallel_size":8,"draft_sample_method":"greedy","enforce_eager":true}'
   text_only:
     description: "Skip the vision encoder for text-only workloads. Mutually exclusive with encoder_parallel."
     args:
@@ -153,7 +160,7 @@ variants:
     precision: int4
     label: "W4A8 (Ascend)"
     vram_minimum_gb: 1711
-    supported_hardware: [ascend_910c]
+    supported_hardware: [ascend_910c, ascend_950dt_8x]
     extra_args:
       - "--quantization"
       - "ascend"
@@ -189,6 +196,18 @@ variants:
     hardware_overrides:
       ascend_910c:
         docker_image: "quay.io/ascend/vllm-ascend:kimi-k3-a3"
+      ascend_950dt_8x:
+        docker_image: "quay.io/ascend/vllm-ascend:v0.27.1rc1-a5@sha256:569fecd9d68fd1c1fd0e8e5b0a21d55e2cac890ef2c2e35c9e7b37b15a917cc2"
+        docker_serve_command: "vllm serve"
+        install:
+          pip: false
+        extra_args:
+          - "--tokenizer-mode"
+          - "kimi_k3"
+        extra_env:
+          HCCL_IF_IP: "$LOCAL_IP"
+          HCCL_SOCKET_IFNAME: "$IFACE_NAME"
+          ASCEND_RT_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
     description: "ModelSlim INT4 W4A8 for Ascend NPU. Requires --quantization ascend. Validated on 4× 910C mixed P/D."
 
   fp8:
@@ -216,18 +235,24 @@ strategy_hardware:
     gb200: supported
     gb300: supported
     ascend_910c: supported
+    ascend_950dt_8x: supported
   multi_node_dep:
     h100: unsupported
     h200: unsupported
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tp:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tep:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   multi_node_tp_pp:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
   pd_cluster:
     ascend_910c: unsupported
+    ascend_950dt_8x: unsupported
 
 default_strategy: single_node_tp
 
@@ -252,6 +277,7 @@ strategy_min_gpus:
   gb200:
     multi_node_tp: 16
   ascend_910c: 64
+  ascend_950dt_8x: 32
 
 
 hardware_overrides:
@@ -537,6 +563,17 @@ guide: |
   - **CUDA:** The kimi-k3 image ships as a CUDA 13 (cu130) build only — there is no -cu129 tag, and the K3-enabled wheels are not on the cu129 nightly index. The host needs an r580+ NVIDIA driver; on a CUDA 12.9 (r575) host, upgrade the driver or build vLLM from the K3 branch against cu129 PyTorch yourself.
   - **Hardware:** At least 8x GB300. Multi-node for real production traffic.
   - **ROCm:** At least 8x MI355X/MI350X. On MI355X the command builder uses the ROCm 10.0 nightly image `vllm/vllm-openai-rocm:nightly-rocm100`; the day-0 `vllm/vllm-openai-rocm:kimi-k3` image predates the DSpark and MoE fixes that path needs (see [AMD MI355X: InferenceX AgentX alignment](#amd-mi355x-inferencex-agentx-alignment)).
+
+  ## Ascend 950DT (A5)
+
+  The [vLLM-Ascend v0.27.1rc1 guide](https://docs.vllm.ai/projects/ascend/en/v0.27.1rc1/tutorials/models/Kimi-K3.html) documents an experimental four-node mixed Prefill/Decode deployment on 950DT: eight NPUs per node, TP8 within each node, DP4 across nodes, and EP32. This recipe declares support from that guide; the A5 commands have not been independently run for this recipe.
+
+  - **Weights:** download [Eco-Tech/Kimi-K3-w4a8](https://www.modelscope.cn/models/Eco-Tech/Kimi-K3-w4a8) from ModelScope. For optional DSpark, also download the [RadixArk/Kimi-K3-DSpark](https://huggingface.co/RadixArk/Kimi-K3-DSpark) GQA draft. Stage the same checkpoint revisions at identical container-visible paths on every node; replace the generated target-model argument and the DSpark JSON `model` value with those local paths.
+  - **Runtime:** use the pinned `quay.io/ascend/vllm-ascend:v0.27.1rc1-a5` release image selected by the A5 variant. It contains the matching vLLM-Ascend runtime; a generic upstream vLLM pip installation is insufficient. The tutorial's `kimi-k3-a5` image aliases were unavailable when this recipe was prepared, so this recipe pins the published release image instead. This image substitution still requires validation on the target cluster.
+  - **Builder:** select **Ascend 950DT 8x**, **W4A8 (Ascend)**, **Multi-Node TP + Data Parallel**, **4 nodes**, and the **Python** frontend. The baseline context is 131,072 tokens, with 16 sequences and a 24,576-token batch budget. Enable **Speculative Decoding** for seven DSpark draft tokens, draft TP8, greedy drafting, and eager draft execution.
+  - **Networking:** set `LOCAL_IP` separately on each node and set `IFACE_NAME` to the interface owning that address. Ensure `$HEAD_IP` in the generated commands points to node 0. Leave `HCCL_OP_EXPANSION_MODE` unset for mixed deployment. Start the head first, then the three worker commands with distinct DP start ranks 1, 2, and 3.
+
+  The [pinned source tutorial](https://github.com/vllm-project/vllm-ascend/blob/9ce79dfbdedba31e5f4490581cd9e7dd8fa9c06d/docs/source/tutorials/models/Kimi-K3.md) also describes eight-node 1M-context serving and four-Prefill/four-Decode separation. Follow its role-specific launchers and KV-transfer configuration for those deployments; the builder's generic PD and Mooncake options do not implement that Ascend flow. The pooled example uses MemCache and is distinct from the builder's Mooncake KV offload. These additional configurations are not enabled by this A5 mixed-deployment recipe.
 
   ## Client Usage
 

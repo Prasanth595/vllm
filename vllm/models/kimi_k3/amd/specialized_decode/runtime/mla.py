@@ -13,6 +13,7 @@ Pure decode only (every row a decode row), as the mono step is.
 """
 
 import contextlib
+from typing import Any
 
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.model_executor.layers.attention.attention import get_attention_context
@@ -78,7 +79,8 @@ def _prepadded(padded, n):
     ``n + i`` a copy of head ``i % n``. Any other query is padded as usual."""
     from vllm.v1.attention.backends.mla.rocm_aiter_mla import AiterMLAHelper
 
-    orig = AiterMLAHelper.__dict__["get_mla_padded_q"]
+    helper: Any = AiterMLAHelper  # mypy: no method assignment
+    orig = helper.__dict__["get_mla_padded_q"]
 
     def get_mla_padded_q(num_heads, q, target_heads=None):
         if (
@@ -91,11 +93,11 @@ def _prepadded(padded, n):
             return padded
         return orig.__func__(num_heads, q, target_heads)
 
-    AiterMLAHelper.get_mla_padded_q = staticmethod(get_mla_padded_q)
+    helper.get_mla_padded_q = staticmethod(get_mla_padded_q)
     try:
         yield
     finally:
-        AiterMLAHelper.get_mla_padded_q = orig
+        helper.get_mla_padded_q = orig
 
 
 def post(wrapper, o, lse, md, gate):
